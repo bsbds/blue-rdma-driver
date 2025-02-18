@@ -13,8 +13,11 @@ use qp_attr::{IbvQpAttr, IbvQpInitAttr};
 
 use crate::{
     ack_responder::AckResponder,
-    completion::{CompletionEvent, CompletionQueueTable, CqManager, EventRegistry},
-    completion_worker::CompletionWorker,
+    completion_v2::{
+        CompletionEvent, CompletionQueueTable, CompletionTask, CompletionWorker, CqManager,
+        EventRegistry,
+    },
+    constants::PSN_MASK,
     ctx_ops::RdmaCtxOps,
     device_protocol::{
         DeviceCommand, MetaReport, MttEntry, QpParams, RecvBuffer, RecvBufferMeta, SimpleNicTunnel,
@@ -81,9 +84,11 @@ pub(crate) struct HwDeviceCtx<H: HwDevice> {
     mtt_buffer: PageWithPhysAddr,
     qp_manager: QpManager,
     cq_manager: CqManager,
+    cq_table: CompletionQueueTable,
     sender_table: SenderTable,
     retransmit_tx: flume::Sender<RetransmitTask>,
     packet_retransmit_tx: flume::Sender<PacketRetransmitTask>,
+    completion_tx: flume::Sender<CompletionTask>,
     cmd_controller: CommandController<H::Adaptor>,
     send_scheduler: SendQueueScheduler,
     post_recv_tx_table: PostRecvTxTable,
@@ -118,7 +123,7 @@ where
             .collect::<Result<_, _>>()?;
 
         let is_shutdown = Arc::new(AtomicBool::new(false));
-        let (comp_tx, comp_rx) = flume::unbounded();
+        let (completion_tx, completion_rx) = flume::unbounded();
         let (ack_tx, ack_rx) = flume::unbounded();
         let (retransmit_tx, retransmit_rx) = flume::unbounded();
         let (packet_retransmit_tx, packet_retransmit_rx) = flume::unbounded();
@@ -127,7 +132,7 @@ where
         let qp_attr_table = QueuePairAttrTable::new();
         let qp_manager = QpManager::new(qp_attr_table.clone_arc());
         let cq_manager = CqManager::new();
-        let cq_table = cq_manager.table().clone_arc();
+        let cq_table = CompletionQueueTable::new();
 
         let simple_nic_controller = SimpleNicController::init_v2(
             &adaptor,
@@ -144,9 +149,10 @@ where
             ack_tx.clone(),
             retransmit_tx.clone(),
             packet_retransmit_tx.clone(),
+            completion_tx.clone(),
             Arc::clone(&is_shutdown),
         )?;
-        CompletionWorker::new(cq_table, qp_attr_table.clone_arc(), comp_rx).spawn();
+        CompletionWorker::new(qp_attr_table.clone_arc(), completion_rx, &cq_table).spawn();
         cmd_controller.set_network(network_config)?;
         cmd_controller.set_raw_packet_recv_buffer(RecvBufferMeta::new(rx_buffer_pa))?;
 
@@ -161,9 +167,11 @@ where
             send_scheduler,
             qp_manager,
             cq_manager,
+            cq_table,
             sender_table: SenderTable::new(),
             retransmit_tx,
             packet_retransmit_tx,
+            completion_tx,
             mtt_buffer: alloc_page()?,
             mtt: Mtt::new(),
             post_recv_tx_table: PostRecvTxTable::new(),
@@ -200,6 +208,7 @@ impl<H: HwDevice> HwDeviceCtx<H> {
             .map_qp_mut(qpn, |sender| sender.next_wr(num_psn))
             .flatten()
             .ok_or(io::Error::from(io::ErrorKind::InvalidInput))?;
+        let end_psn = (psn + num_psn) & PSN_MASK;
         let chunk_builder = WrChunkBuilder::new().set_qp_params(QpParams::new(
             msn,
             qp.qp_type,
@@ -217,12 +226,10 @@ impl<H: HwDevice> HwDeviceCtx<H> {
             let send_cq_handle = qp
                 .send_cq
                 .ok_or(io::Error::from(io::ErrorKind::InvalidInput))?;
-            self.cq_manager.register_event(
-                send_cq_handle,
-                qpn,
-                CompletionEvent::new(qpn, msn, wr_id),
-                true,
-            );
+            self.completion_tx.send(CompletionTask::Register {
+                cq_handle: send_cq_handle,
+                event: CompletionEvent::new_rdma_write(qpn, msn, end_psn, wr_id),
+            });
         }
         let qp_params = QpParams::new(
             msn,
@@ -367,10 +374,10 @@ where
     }
 
     fn poll_cq(&mut self, handle: u32, max_num_entries: usize) -> Vec<CompletionEvent> {
-        let Some(cq) = self.cq_manager.table().get(handle) else {
+        let Some(cq) = self.cq_table.get_cq(handle) else {
             return vec![];
         };
-        iter::repeat_with(|| cq.poll_event_queue())
+        iter::repeat_with(|| cq.pop_front())
             .take_while(Option::is_some)
             .take(max_num_entries)
             .flatten()

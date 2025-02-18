@@ -9,7 +9,7 @@ use crate::{
     timeout_retransmit::RetransmitTask,
 };
 
-use super::MetaWorker;
+use super::{CompletionTask, MetaWorker};
 
 /// Offset between the `now_psn` an `base_psn`
 const BASE_PSN_OFFSET: u32 = 0x70;
@@ -55,7 +55,7 @@ impl<T> MetaWorker<T> {
             return;
         };
         if let Some(psn) = Self::update_packet_tracker(tracker, psn_now, now_bitmap, ack_msn) {
-            self.send_update(qpn, psn);
+            self.send_update(!is_send_by_local_hw, qpn, psn);
         }
     }
 
@@ -66,7 +66,7 @@ impl<T> MetaWorker<T> {
             return;
         };
         if let Some(psn) = tracker.ack_before(psn_now) {
-            self.send_update(qpn, psn);
+            self.send_update(true, qpn, psn);
         }
     }
 
@@ -93,7 +93,7 @@ impl<T> MetaWorker<T> {
         let x = Self::update_packet_tracker(tracker, psn_now, now_bitmap, ack_msn);
         let y = Self::update_packet_tracker(tracker, psn_pre, pre_bitmap, ack_msn);
         for psn in x.into_iter().chain(y) {
-            self.send_update(qpn, psn);
+            self.send_update(!is_send_by_local_hw, qpn, psn);
         }
         // TODO: implement more fine-grained retransmission
         let psn_low = psn_pre.wrapping_sub(BASE_PSN_OFFSET) & PSN_MASK;
@@ -138,7 +138,10 @@ impl<T> MetaWorker<T> {
         tracker.ack_range(base_psn, bitmap, ack_msn)
     }
 
-    fn send_update(&self, qpn: u32, psn: u32) {
+    fn send_update(&self, is_send: bool, qpn: u32, psn: u32) {
+        let _ignore = self
+            .completion_tx
+            .send(CompletionTask::UpdateBasePsn { qpn, psn, is_send });
         let __ignore = self
             .packet_retransmit_tx
             .send(PacketRetransmitTask::Ack { qpn, psn });

@@ -15,6 +15,7 @@ use tracing::error;
 
 use crate::{
     ack_responder::AckResponse,
+    completion_v2::CompletionTask,
     device_protocol::{MetaReport, ReportMeta},
     message_worker::Task,
     packet_retransmit::PacketRetransmitTask,
@@ -31,6 +32,7 @@ pub(crate) struct MetaWorker<T> {
     ack_tx: flume::Sender<AckResponse>,
     retransmit_tx: flume::Sender<RetransmitTask>,
     packet_retransmit_tx: flume::Sender<PacketRetransmitTask>,
+    completion_tx: flume::Sender<CompletionTask>,
 }
 
 impl<T: MetaReport + Send + 'static> MetaWorker<T> {
@@ -39,12 +41,14 @@ impl<T: MetaReport + Send + 'static> MetaWorker<T> {
         ack_tx: flume::Sender<AckResponse>,
         retransmit_tx: flume::Sender<RetransmitTask>,
         packet_retransmit_tx: flume::Sender<PacketRetransmitTask>,
+        completion_tx: flume::Sender<CompletionTask>,
     ) -> Self {
         Self {
             inner,
             ack_tx,
             retransmit_tx,
             packet_retransmit_tx,
+            completion_tx,
             send_table: TrackerTable::new(),
             recv_table: TrackerTable::new(),
         }

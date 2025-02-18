@@ -3,6 +3,7 @@ use std::{net::Ipv4Addr, ptr};
 use ipnetwork::{IpNetwork, Ipv4Network};
 
 use crate::{
+    completion_v2::CompletionEvent,
     ctx_ops::RdmaCtxOps,
     net::config::{MacAddress, NetworkConfig},
     send::SendWr,
@@ -353,9 +354,30 @@ unsafe impl RdmaCtxOps for BlueRdmaCore {
         let num = completions.len() as i32;
         for (i, c) in completions.into_iter().enumerate() {
             if let Some(wc) = unsafe { wc.add(i).as_mut() } {
-                wc.wr_id = c.user_data;
-                wc.qp_num = c.qpn;
-                wc.status = ibverbs_sys::ibv_wc_status::IBV_WC_SUCCESS;
+                match c {
+                    CompletionEvent::RdmaWrite {
+                        qpn,
+                        msn,
+                        end_psn,
+                        wr_id,
+                    } => {
+                        wc.wr_id = wr_id;
+                        wc.qp_num = qpn;
+                        wc.status = ibverbs_sys::ibv_wc_status::IBV_WC_SUCCESS;
+                        wc.opcode = ibverbs_sys::ibv_wc_opcode::IBV_WC_RDMA_WRITE;
+                    }
+                    CompletionEvent::RecvRdmaWithImm {
+                        qpn,
+                        msn,
+                        end_psn,
+                        imm,
+                    } => {
+                        wc.__bindgen_anon_1.imm_data = imm;
+                        wc.qp_num = qpn;
+                        wc.status = ibverbs_sys::ibv_wc_status::IBV_WC_SUCCESS;
+                        wc.opcode = ibverbs_sys::ibv_wc_opcode::IBV_WC_RECV_RDMA_WITH_IMM;
+                    }
+                }
             }
         }
 
