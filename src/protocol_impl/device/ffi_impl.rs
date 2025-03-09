@@ -156,7 +156,7 @@ unsafe impl RdmaCtxOps for BlueRdmaCore {
                 .to_string_lossy()
                 .into_owned()
         };
-        let Ok(ctx) = BlueRdmaCore::new_hw(&name) else {
+        let Ok(ctx) = BlueRdmaCore::new_emulated(&name) else {
             return ptr::null_mut();
         };
         Box::into_raw(Box::new(ctx)).cast()
@@ -458,12 +458,12 @@ struct BlueRdmaDevice {
 #[allow(unsafe_code)]
 unsafe fn get_device(
     context: *mut ibverbs_sys::ibv_context,
-) -> &'static mut HwDeviceCtx<PciHwDevice> {
+) -> &'static mut HwDeviceCtx<EmulatedHwDevice> {
     let dev_ptr = unsafe { *context }.device.cast::<BlueRdmaDevice>();
     unsafe {
         (*dev_ptr)
             .driver
-            .cast::<HwDeviceCtx<PciHwDevice>>()
+            .cast::<HwDeviceCtx<EmulatedHwDevice>>()
             .as_mut()
     }
     .unwrap_or_else(|| unreachable!("null device pointer"))
