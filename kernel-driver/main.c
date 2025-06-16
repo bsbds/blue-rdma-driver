@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 
 #include <linux/module.h>
+#include <linux/etherdevice.h>
+#include <linux/netdevice.h>
 
 #include "bluerdma.h"
 #include "verbs.h"
+#include "ethernet.h"
 
 MODULE_AUTHOR("Hange Shen <Foreverhighness@gmail.com>");
 MODULE_DESCRIPTION("DatenLord RDMA adapter driver");
@@ -17,13 +20,15 @@ static struct bluerdma_dev *testing_dev[N_TESTING] = {};
 static int bluerdma_new_testing(void)
 {
 	struct bluerdma_dev *dev;
-	int i;
+	int i, ret;
 
 	for (i = 0; i < N_TESTING; i++) {
 		dev = ib_alloc_device(bluerdma_dev, ibdev);
 		if (!dev) {
 			pr_err("ib_alloc_device failed for index %d\n", i);
 			while (--i >= 0) {
+				if (testing_dev[i]->netdev)
+					bluerdma_destroy_netdev(testing_dev[i]);
 				ib_dealloc_device(&testing_dev[i]->ibdev);
 				testing_dev[i] = NULL;
 			}
@@ -32,6 +37,20 @@ static int bluerdma_new_testing(void)
 		testing_dev[i] = dev;
 		dev->id = i;
 		pr_info("ib_alloc_device ok for index %d\n", dev->id);
+
+		ret = bluerdma_create_netdev(dev, i);
+		if (ret) {
+			pr_err("bluerdma_create_netdev failed for index %d\n",
+			       i);
+			ib_dealloc_device(&dev->ibdev);
+			while (--i >= 0) {
+				if (testing_dev[i]->netdev)
+					bluerdma_destroy_netdev(testing_dev[i]);
+				ib_dealloc_device(&testing_dev[i]->ibdev);
+				testing_dev[i] = NULL;
+			}
+			return ret;
+		}
 	}
 
 	return 0;
@@ -42,6 +61,8 @@ static void bluerdma_free_testing(void)
 	int i;
 	for (i = 0; i < N_TESTING; i++) {
 		if (testing_dev[i]) {
+			if (testing_dev[i]->netdev)
+				bluerdma_destroy_netdev(testing_dev[i]);
 			ib_dealloc_device(&testing_dev[i]->ibdev);
 			testing_dev[i] = NULL;
 			pr_info("ib_dealloc_device ok for index %d\n", i);
@@ -86,7 +107,9 @@ static const struct ib_device_ops bluerdma_device_ops = {
 	.dealloc_ucontext = bluerdma_dealloc_ucontext,
 
 	.query_gid = bluerdma_query_gid,
-	// .query_pkey = bluerdma_query_pkey,
+	.query_pkey = bluerdma_query_pkey,
+	.add_gid = bluerdma_add_gid,
+	.del_gid = bluerdma_del_gid,
 
 	// init size
 	// INIT_RDMA_OBJ_SIZE(ib_ah, bluerdma_ah, ibah),
@@ -100,8 +123,6 @@ static const struct ib_device_ops bluerdma_device_ops = {
 
 static int bluerdma_ib_device_add(struct pci_dev *pdev)
 {
-	// struct bluerdma_dev *dev = pci_get_drvdata(pdev);
-	// struct bluerdma_dev *dev;
 	struct ib_device *ibdev;
 	int ret, i;
 
@@ -116,13 +137,15 @@ static int bluerdma_ib_device_add(struct pci_dev *pdev)
 
 		strscpy(ibdev->node_desc, "bluerdma", sizeof(ibdev->node_desc));
 
-		ibdev->node_type = RDMA_NODE_UNSPECIFIED;
+		ibdev->node_type = RDMA_NODE_RNIC;
 		ibdev->phys_port_cnt = 1;
 		ibdev->num_comp_vectors = num_possible_cpus();
 		ibdev->local_dma_lkey = 0;
 
 		ib_set_device_ops(ibdev, &bluerdma_device_ops);
 		pr_info("ib_set_device_ops ok for index %d\n", i);
+
+		bluerdma_init_sysfs_attrs(testing_dev[i]);
 
 		ret = ib_register_device(ibdev, "bluerdma%d", NULL);
 		if (ret) {
@@ -134,9 +157,36 @@ static int bluerdma_ib_device_add(struct pci_dev *pdev)
 			return ret;
 		}
 		pr_info("ib_register_device %s\n", ibdev->name);
+
+		ret = device_create_file(&ibdev->dev,
+					 &testing_dev[i]->gids_attr);
+		if (ret) {
+			pr_err("Failed to create gids sysfs file for device %d\n",
+			       i);
+		}
+
+		ret = device_create_file(&ibdev->dev,
+					 &testing_dev[i]->mac_attr);
+		if (ret) {
+			pr_err("Failed to create mac sysfs file for device %d\n",
+			       i);
+		}
+
+		if (testing_dev[i]->netdev) {
+			ret = ib_device_set_netdev(ibdev,
+						   testing_dev[i]->netdev, 1);
+			if (ret) {
+				pr_err("ib_device_set_netdev failed for index %d: %d\n",
+				       i, ret);
+			} else {
+				pr_info("Associated netdev %s with RDMA device %s\n",
+					testing_dev[i]->netdev->name,
+					ibdev->name);
+			}
+		}
 	}
 
-	return ret;
+	return 0;
 }
 
 static void bluerdma_ib_device_remove(struct pci_dev *pdev)
@@ -144,6 +194,11 @@ static void bluerdma_ib_device_remove(struct pci_dev *pdev)
 	// struct bluerdma_dev *dev = pci_get_drvdata(pdev);
 	for (int i = 0; i < N_TESTING; i++) {
 		if (testing_dev[i]) {
+			device_remove_file(&testing_dev[i]->ibdev.dev,
+					   &testing_dev[i]->gids_attr);
+			device_remove_file(&testing_dev[i]->ibdev.dev,
+					   &testing_dev[i]->mac_attr);
+
 			ib_unregister_device(&testing_dev[i]->ibdev);
 			pr_info("ib_unregister_device ok for index %d\n", i);
 		}

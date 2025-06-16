@@ -53,4 +53,7 @@ int bluerdma_query_pkey(struct ib_device *ibdev, u32 port_num, u16 index,
 int bluerdma_query_gid(struct ib_device *ibdev, u32 port_num, int index,
 		       union ib_gid *gid);
 
+int bluerdma_add_gid(const struct ib_gid_attr *attr, void **context);
+int bluerdma_del_gid(const struct ib_gid_attr *attr, void **context);
+
 #endif // __BLUERDMA_VERBS_H__
