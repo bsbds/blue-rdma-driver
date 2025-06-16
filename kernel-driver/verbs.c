@@ -14,27 +14,29 @@ int bluerdma_query_port(struct ib_device *ibdev, u32 port_num,
 			struct ib_port_attr *attr)
 {
 	struct bluerdma_dev *dev = to_bdev(ibdev);
-	// struct net_device *ndev = dev->netdev;
+	struct net_device *ndev = dev->netdev;
 
 	memset(attr, 0, sizeof(*attr));
 
 	attr->gid_tbl_len = 1;
-	// attr->port_cap_flags = IB_PORT_CM_SUP | IB_PORT_DEVICE_MGMT_SUP;
-	// attr->max_msg_sz = -1;
+	attr->port_cap_flags = IB_PORT_CM_SUP | IB_PORT_DEVICE_MGMT_SUP;
+	attr->max_msg_sz = 0x80000000; /* 2GB */
 
-	// if (!ndev)
-	// 	goto out;
+	if (!ndev)
+		goto out;
 
-	// ib_get_eth_speed(ibdev, port, &attr->active_speed, &attr->active_width);
-	// attr->max_mtu = ib_mtu_int_to_enum(ndev->mtu);
-	// attr->active_mtu = ib_mtu_int_to_enum(ndev->mtu);
-	// if (netif_running(ndev) && netif_carrier_ok(ndev))
-	dev->state = IB_PORT_ACTIVE;
-	// else
-	// 	dev->state = IB_PORT_DOWN;
+	ib_get_eth_speed(ibdev, port_num, &attr->active_speed, &attr->active_width);
+	attr->max_mtu = ib_mtu_int_to_enum(ndev->mtu);
+	attr->active_mtu = ib_mtu_int_to_enum(ndev->mtu);
+	
+	if (netif_running(ndev) && netif_carrier_ok(ndev))
+		dev->state = IB_PORT_ACTIVE;
+	else
+		dev->state = IB_PORT_DOWN;
+	
 	attr->state = dev->state;
 
-	// out:
+out:
 	if (dev->state == IB_PORT_ACTIVE)
 		attr->phys_state = IB_PORT_PHYS_STATE_LINK_UP;
 	else
@@ -192,12 +194,27 @@ int bluerdma_query_gid(struct ib_device *ibdev, u32 port_num, int index,
 		       union ib_gid *gid)
 {
 	struct bluerdma_dev *dev = to_bdev(ibdev);
-	int i;
-
-	pr_info("bluerdma_query_gid: %d\n", dev->id + 1);
-	for (i = 0; i < 16; i++) {
-		gid->raw[i] = dev->id + 1;
+	struct net_device *ndev = dev->netdev;
+	
+	if (!ndev) {
+		pr_err("bluerdma_query_gid: no netdev for device %d\n", dev->id);
+		return -EINVAL;
 	}
-
+	
+	if (index != 0) {
+		pr_err("bluerdma_query_gid: invalid index %d\n", index);
+		return -EINVAL;
+	}
+	
+	/* Create an IPv6-mapped IPv4 GID based on the MAC address */
+	memset(gid->raw, 0, 10);
+	gid->raw[10] = 0xff;
+	gid->raw[11] = 0xff;
+	
+	/* Use the last 4 bytes of the MAC address as the IPv4 address */
+	memcpy(&gid->raw[12], &ndev->dev_addr[2], 4);
+	
+	pr_debug("bluerdma_query_gid: device %d, GID %pI6\n", dev->id, gid->raw);
+	
 	return 0;
 }
