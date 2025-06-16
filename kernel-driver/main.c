@@ -142,34 +142,34 @@ static int bluerdma_create_netdev(struct bluerdma_dev *dev, int id)
 	struct net_device *netdev;
 	int ret;
 
-	/* Allocate Ethernet device */
 	netdev = alloc_etherdev(sizeof(struct bluerdma_dev));
 	if (!netdev) {
 		pr_err("Failed to allocate netdev for device %d\n", id);
 		return -ENOMEM;
 	}
 
-	/* Set device name */
 	snprintf(netdev->name, IFNAMSIZ, "blue%d", id);
 
-	/* Set private data */
-	dev = netdev_priv(netdev);
-	dev->netdev = netdev;
-	dev->id = id;
+	struct bluerdma_dev *priv = netdev_priv(netdev);
 
-	/* Setup the Ethernet device */
+	priv->id = id;
+	priv->netdev = netdev;
+
+	dev->netdev = netdev;
+
 	bluerdma_netdev_setup(netdev);
 
-	/* Register the network device */
 	ret = register_netdev(netdev);
 	if (ret) {
 		pr_err("Failed to register netdev for device %d: %d\n", id,
 		       ret);
 		free_netdev(netdev);
+		dev->netdev = NULL;
 		return ret;
 	}
 
-	pr_info("Registered network device %s\n", netdev->name);
+	pr_info("Registered network device %s for RDMA device %d\n",
+		netdev->name, id);
 	return 0;
 }
 
