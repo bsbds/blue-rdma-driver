@@ -160,7 +160,7 @@ int bluerdma_get_port_immutable(struct ib_device *ibdev, u32 port_num,
 	if (err)
 		goto err_out;
 
-	immutable->core_cap_flags = RDMA_CORE_CAP_PROT_USNIC;
+	immutable->core_cap_flags = RDMA_CORE_CAP_PROT_ROCE | RDMA_CORE_CAP_PROT_ROCE_UDP_ENCAP;
 	immutable->pkey_tbl_len = 1;
 	immutable->gid_tbl_len = BLUERDMA_GID_TABLE_SIZE;
 
