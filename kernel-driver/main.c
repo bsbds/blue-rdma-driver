@@ -51,6 +51,7 @@ static int bluerdma_netdev_open(struct net_device *netdev)
 		netdev->name);
 
 	/* Start the network interface */
+	netif_carrier_on(netdev);
 	netif_start_queue(netdev);
 	napi_enable(&dev->napi);
 
@@ -70,6 +71,7 @@ static int bluerdma_netdev_stop(struct net_device *netdev)
 	/* Stop the network interface */
 	napi_disable(&dev->napi);
 	netif_stop_queue(netdev);
+	netif_carrier_off(netdev);
 
 	/* Update RDMA port state */
 	dev->state = IB_PORT_DOWN;
@@ -135,6 +137,9 @@ static void bluerdma_netdev_setup(struct net_device *netdev)
 
 	/* Initialize locks */
 	spin_lock_init(&dev->tx_lock);
+	
+	/* Start with carrier off - will be turned on when opened */
+	netif_carrier_off(netdev);
 }
 
 static void bluerdma_init_gid_table(struct bluerdma_dev *dev)

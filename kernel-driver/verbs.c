@@ -18,9 +18,19 @@ int bluerdma_query_port(struct ib_device *ibdev, u32 port_num,
 
 	memset(attr, 0, sizeof(*attr));
 
-	attr->gid_tbl_len = 1;
+	attr->gid_tbl_len = BLUERDMA_GID_TABLE_SIZE;
 	attr->port_cap_flags = IB_PORT_CM_SUP | IB_PORT_DEVICE_MGMT_SUP;
 	attr->max_msg_sz = 0x80000000; /* 2GB */
+	attr->pkey_tbl_len = 1;
+	attr->bad_pkey_cntr = 0;
+	attr->qkey_viol_cntr = 0;
+	attr->lid = 0;
+	attr->sm_lid = 0;
+	attr->lmc = 0;
+	attr->max_vl_num = 1;
+	attr->sm_sl = 0;
+	attr->subnet_timeout = 0;
+	attr->init_type_reply = 0;
 
 	if (!ndev)
 		goto out;
