@@ -3,6 +3,8 @@
 #include <linux/module.h>
 #include <linux/etherdevice.h>
 #include <linux/netdevice.h>
+#include <linux/inetdevice.h>
+#include <net/addrconf.h>
 
 #include "bluerdma.h"
 #include "verbs.h"
@@ -137,6 +139,91 @@ static void bluerdma_netdev_setup(struct net_device *netdev)
 	spin_lock_init(&dev->tx_lock);
 }
 
+/* Update GID based on IPv4 address */
+static void bluerdma_update_gid_from_ipv4(struct bluerdma_dev *dev, __be32 ipv4_addr, int index)
+{
+	if (!dev || index < 0 || index >= BLUERDMA_GID_TABLE_SIZE)
+		return;
+	
+	spin_lock(&dev->gid_lock);
+	
+	/* Create an IPv6-mapped IPv4 GID */
+	memset(dev->gid_table[index].gid.raw, 0, 10);
+	dev->gid_table[index].gid.raw[10] = 0xff;
+	dev->gid_table[index].gid.raw[11] = 0xff;
+	
+	/* Use the IPv4 address for the last 4 bytes */
+	memcpy(&dev->gid_table[index].gid.raw[12], &ipv4_addr, 4);
+	
+	dev->gid_table[index].valid = true;
+	
+	pr_info("Updated GID at index %d for device %d: %pI6 (IPv4: %pI4)\n", 
+		index, dev->id, dev->gid_table[index].gid.raw, &ipv4_addr);
+	
+	spin_unlock(&dev->gid_lock);
+}
+
+/* Scan for IPv4 addresses and update GIDs */
+static void bluerdma_update_gids_from_ipv4(struct bluerdma_dev *dev)
+{
+	struct net_device *netdev = dev->netdev;
+	struct in_device *in_dev;
+	struct in_ifaddr *ifa;
+	int index = 1; /* Start from index 1, leave index 0 for default GID */
+	
+	if (!netdev)
+		return;
+	
+	rtnl_lock();
+	in_dev = __in_dev_get_rtnl(netdev);
+	if (in_dev) {
+		in_dev_for_each_ifa_rtnl(ifa, in_dev) {
+			if (index < BLUERDMA_GID_TABLE_SIZE) {
+				bluerdma_update_gid_from_ipv4(dev, ifa->ifa_address, index);
+				index++;
+			}
+		}
+	}
+	rtnl_unlock();
+}
+
+/* Netdevice notifier to catch IP address changes */
+static int bluerdma_netdev_event(struct notifier_block *this,
+				 unsigned long event, void *ptr)
+{
+	struct net_device *netdev = netdev_notifier_info_to_dev(ptr);
+	struct bluerdma_dev *dev;
+	int i;
+	
+	/* Find our device */
+	for (i = 0; i < N_TESTING; i++) {
+		if (testing_dev[i] && testing_dev[i]->netdev == netdev) {
+			dev = testing_dev[i];
+			break;
+		}
+	}
+	
+	if (i >= N_TESTING)
+		return NOTIFY_DONE;
+	
+	switch (event) {
+	case NETDEV_UP:
+	case NETDEV_CHANGEADDR:
+	case NETDEV_REGISTER:
+	case NETDEV_CHANGE:
+		bluerdma_update_gids_from_ipv4(dev);
+		break;
+	default:
+		break;
+	}
+	
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block bluerdma_netdev_notifier = {
+	.notifier_call = bluerdma_netdev_event,
+};
+
 static void bluerdma_init_gid_table(struct bluerdma_dev *dev)
 {
 	int i;
@@ -162,6 +249,9 @@ static void bluerdma_init_gid_table(struct bluerdma_dev *dev)
 		
 		pr_debug("Initialized default GID for device %d: %pI6\n", 
 			 dev->id, dev->gid_table[0].gid.raw);
+		
+		/* Check for existing IP addresses */
+		bluerdma_update_gids_from_ipv4(dev);
 	}
 }
 
@@ -439,8 +529,20 @@ static int __init bluerdma_init_module(void)
 	int ret;
 
 	ret = request_module("ib_uverbs");
+	
+	/* Register netdevice notifier to catch IP address changes */
+	ret = register_netdevice_notifier(&bluerdma_netdev_notifier);
+	if (ret) {
+		pr_err("Failed to register netdevice notifier: %d\n", ret);
+		return ret;
+	}
+	
 	// ret = pci_register_driver(&bluerdma_pci_driver);
 	ret = bluerdma_probe(NULL, NULL);
+	if (ret) {
+		unregister_netdevice_notifier(&bluerdma_netdev_notifier);
+		return ret;
+	}
 
 	return 0;
 }
@@ -449,6 +551,9 @@ static void __exit bluerdma_exit_module(void)
 {
 	pr_info("DatenLord RDMA driver unloaded\n");
 
+	/* Unregister netdevice notifier */
+	unregister_netdevice_notifier(&bluerdma_netdev_notifier);
+	
 	bluerdma_remove(NULL);
 	// pci_unregister_driver(&bluerdma_pci_driver);
 }
