@@ -147,6 +147,28 @@ static void bluerdma_netdev_setup(struct net_device *netdev)
 	netif_carrier_off(netdev);
 }
 
+/* Convert MAC address to EUI-64 format for GID */
+static void mac_to_eui64_gid(u8 *mac, union ib_gid *gid)
+{
+	/* Set the link-local prefix (fe80::) */
+	gid->raw[0] = 0xfe;
+	gid->raw[1] = 0x80;
+	memset(&gid->raw[2], 0, 6);
+	
+	/* Convert MAC to EUI-64 format:
+	 * MAC: XX:XX:XX:YY:YY:YY becomes XX:XX:XX:FF:FE:YY:YY:YY
+	 * and flip the 7th bit of the first byte
+	 */
+	gid->raw[8] = mac[0] ^ 0x02;  /* Flip universal/local bit */
+	gid->raw[9] = mac[1];
+	gid->raw[10] = mac[2];
+	gid->raw[11] = 0xFF;
+	gid->raw[12] = 0xFE;
+	gid->raw[13] = mac[3];
+	gid->raw[14] = mac[4];
+	gid->raw[15] = mac[5];
+}
+
 static void bluerdma_init_gid_table(struct bluerdma_dev *dev)
 {
 	int i;
@@ -160,13 +182,8 @@ static void bluerdma_init_gid_table(struct bluerdma_dev *dev)
 	
 	/* Initialize the default GID (index 0) based on MAC address */
 	if (dev->netdev) {
-		/* Create an IPv6-mapped IPv4 GID based on the MAC address */
-		memset(dev->gid_table[0].gid.raw, 0, 10);
-		dev->gid_table[0].gid.raw[10] = 0xff;
-		dev->gid_table[0].gid.raw[11] = 0xff;
-		
-		/* Use the last 4 bytes of the MAC address as the IPv4 address */
-		memcpy(&dev->gid_table[0].gid.raw[12], &dev->mac_addr[2], 4);
+		/* Create an EUI-64 based GID from the MAC address */
+		mac_to_eui64_gid(dev->mac_addr, &dev->gid_table[0].gid);
 		
 		dev->gid_table[0].valid = true;
 		
