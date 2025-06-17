@@ -162,7 +162,7 @@ int bluerdma_get_port_immutable(struct ib_device *ibdev, u32 port_num,
 
 	immutable->core_cap_flags = RDMA_CORE_CAP_PROT_USNIC;
 	immutable->pkey_tbl_len = 1;
-	immutable->gid_tbl_len = 1;
+	immutable->gid_tbl_len = BLUERDMA_GID_TABLE_SIZE;
 
 	return 0;
 
@@ -194,51 +194,94 @@ int bluerdma_query_gid(struct ib_device *ibdev, u32 port_num, int index,
 		       union ib_gid *gid)
 {
 	struct bluerdma_dev *dev = to_bdev(ibdev);
-	struct net_device *ndev = dev->netdev;
+	int ret = 0;
 	
-	if (!ndev) {
-		pr_err("bluerdma_query_gid: no netdev for device %d\n", dev->id);
+	if (port_num != 1) {
+		pr_err("bluerdma_query_gid: invalid port %u\n", port_num);
 		return -EINVAL;
 	}
 	
-	if (index != 0) {
+	if (index < 0 || index >= BLUERDMA_GID_TABLE_SIZE) {
 		pr_err("bluerdma_query_gid: invalid index %d\n", index);
 		return -EINVAL;
 	}
 	
-	/* Create an IPv6-mapped IPv4 GID based on the MAC address */
-	memset(gid->raw, 0, 10);
-	gid->raw[10] = 0xff;
-	gid->raw[11] = 0xff;
+	spin_lock(&dev->gid_lock);
 	
-	/* Use the last 4 bytes of the MAC address as the IPv4 address */
-	memcpy(&gid->raw[12], &ndev->dev_addr[2], 4);
+	if (!dev->gid_table[index].valid) {
+		pr_debug("bluerdma_query_gid: no valid GID at index %d\n", index);
+		ret = -EAGAIN;
+		goto out;
+	}
 	
-	pr_debug("bluerdma_query_gid: device %d, GID %pI6\n", dev->id, gid->raw);
+	memcpy(gid->raw, dev->gid_table[index].gid.raw, 16);
+	pr_debug("bluerdma_query_gid: device %d, index %d, GID %pI6\n", 
+		 dev->id, index, gid->raw);
 	
-	return 0;
+out:
+	spin_unlock(&dev->gid_lock);
+	return ret;
 }
 
 int bluerdma_add_gid(const struct ib_gid_attr *attr, void **context)
 {
 	struct bluerdma_dev *dev = to_bdev(attr->device);
+	int ret = 0;
 	
 	pr_info("bluerdma_add_gid: device %d, port %u, index %u\n", 
 		dev->id, attr->port_num, attr->index);
 	
-	/* In a real driver, we would add the GID to hardware here */
+	if (attr->port_num != 1) {
+		pr_err("bluerdma_add_gid: invalid port %u\n", attr->port_num);
+		return -EINVAL;
+	}
 	
-	return 0;
+	if (attr->index < 0 || attr->index >= BLUERDMA_GID_TABLE_SIZE) {
+		pr_err("bluerdma_add_gid: invalid index %u\n", attr->index);
+		return -EINVAL;
+	}
+	
+	spin_lock(&dev->gid_lock);
+	
+	/* Store the GID in our table */
+	memcpy(&dev->gid_table[attr->index].gid, &attr->gid, sizeof(union ib_gid));
+	memcpy(&dev->gid_table[attr->index].attr, attr, sizeof(struct ib_gid_attr));
+	dev->gid_table[attr->index].valid = true;
+	
+	pr_debug("bluerdma_add_gid: added GID %pI6 at index %u\n", 
+		 attr->gid.raw, attr->index);
+	
+	/* In a real driver, we would program the GID to hardware here */
+	
+	spin_unlock(&dev->gid_lock);
+	return ret;
 }
 
 int bluerdma_del_gid(const struct ib_gid_attr *attr, void **context)
 {
 	struct bluerdma_dev *dev = to_bdev(attr->device);
+	int ret = 0;
 	
 	pr_info("bluerdma_del_gid: device %d, port %u, index %u\n", 
 		dev->id, attr->port_num, attr->index);
 	
+	if (attr->port_num != 1) {
+		pr_err("bluerdma_del_gid: invalid port %u\n", attr->port_num);
+		return -EINVAL;
+	}
+	
+	if (attr->index < 0 || attr->index >= BLUERDMA_GID_TABLE_SIZE) {
+		pr_err("bluerdma_del_gid: invalid index %u\n", attr->index);
+		return -EINVAL;
+	}
+	
+	spin_lock(&dev->gid_lock);
+	
+	/* Mark the GID as invalid in our table */
+	dev->gid_table[attr->index].valid = false;
+	
 	/* In a real driver, we would remove the GID from hardware here */
 	
-	return 0;
+	spin_unlock(&dev->gid_lock);
+	return ret;
 }

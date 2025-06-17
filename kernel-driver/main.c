@@ -137,6 +137,34 @@ static void bluerdma_netdev_setup(struct net_device *netdev)
 	spin_lock_init(&dev->tx_lock);
 }
 
+static void bluerdma_init_gid_table(struct bluerdma_dev *dev)
+{
+	int i;
+	
+	spin_lock_init(&dev->gid_lock);
+	
+	for (i = 0; i < BLUERDMA_GID_TABLE_SIZE; i++) {
+		memset(&dev->gid_table[i], 0, sizeof(struct bluerdma_gid_entry));
+		dev->gid_table[i].valid = false;
+	}
+	
+	/* Initialize the default GID (index 0) based on MAC address */
+	if (dev->netdev) {
+		/* Create an IPv6-mapped IPv4 GID based on the MAC address */
+		memset(dev->gid_table[0].gid.raw, 0, 10);
+		dev->gid_table[0].gid.raw[10] = 0xff;
+		dev->gid_table[0].gid.raw[11] = 0xff;
+		
+		/* Use the last 4 bytes of the MAC address as the IPv4 address */
+		memcpy(&dev->gid_table[0].gid.raw[12], &dev->mac_addr[2], 4);
+		
+		dev->gid_table[0].valid = true;
+		
+		pr_debug("Initialized default GID for device %d: %pI6\n", 
+			 dev->id, dev->gid_table[0].gid.raw);
+	}
+}
+
 static int bluerdma_create_netdev(struct bluerdma_dev *dev, int id)
 {
 	struct net_device *netdev;
@@ -158,6 +186,9 @@ static int bluerdma_create_netdev(struct bluerdma_dev *dev, int id)
 	dev->netdev = netdev;
 
 	bluerdma_netdev_setup(netdev);
+	
+	/* Initialize GID table after MAC address is set */
+	bluerdma_init_gid_table(dev);
 
 	ret = register_netdev(netdev);
 	if (ret) {
