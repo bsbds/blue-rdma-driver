@@ -6,6 +6,8 @@
 #include <linux/pci.h>
 #include <linux/netdevice.h>
 #include <rdma/ib_verbs.h>
+#include <linux/sysfs.h>
+#include <linux/device.h>
 
 #define BLUERDMA_DEFAULT_MTU 1500
 #define BLUERDMA_MAC_PREFIX 0x02, 0xBD, 0xBD, 0x00, 0x00
@@ -36,6 +38,10 @@ struct bluerdma_dev {
 	/* GID table */
 	struct bluerdma_gid_entry gid_table[BLUERDMA_GID_TABLE_SIZE];
 	spinlock_t gid_lock;
+	
+	/* sysfs attributes */
+	struct device_attribute gids_attr;
+	struct device_attribute mac_attr;
 };
 
 static inline struct bluerdma_dev *to_bdev(struct ib_device *ibdev)

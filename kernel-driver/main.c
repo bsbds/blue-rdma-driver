@@ -220,6 +220,57 @@ static void bluerdma_destroy_netdev(struct bluerdma_dev *dev)
 
 #pragma endregion netdev ops
 
+// Show function for GIDs
+static ssize_t bluerdma_show_gids(struct device *dev, 
+                                 struct device_attribute *attr,
+                                 char *buf)
+{
+    struct bluerdma_dev *bdev = container_of(attr, struct bluerdma_dev, gids_attr);
+    ssize_t len = 0;
+    int i;
+    
+    spin_lock(&bdev->gid_lock);
+    
+    for (i = 0; i < BLUERDMA_GID_TABLE_SIZE; i++) {
+        if (bdev->gid_table[i].valid) {
+            len += scnprintf(buf + len, PAGE_SIZE - len, 
+                           "%d: %pI6\n", i, bdev->gid_table[i].gid.raw);
+        }
+    }
+    
+    spin_unlock(&bdev->gid_lock);
+    
+    return len;
+}
+
+// Show function for MAC address
+static ssize_t bluerdma_show_mac(struct device *dev, 
+                                struct device_attribute *attr,
+                                char *buf)
+{
+    struct bluerdma_dev *bdev = container_of(attr, struct bluerdma_dev, mac_attr);
+    
+    return scnprintf(buf, PAGE_SIZE, "%pM\n", bdev->mac_addr);
+}
+
+// Initialize sysfs attributes
+static void bluerdma_init_sysfs_attrs(struct bluerdma_dev *dev)
+{
+    // Initialize GIDs attribute
+    sysfs_attr_init(&dev->gids_attr.attr);
+    dev->gids_attr.attr.name = "gids";
+    dev->gids_attr.attr.mode = 0444; // read-only
+    dev->gids_attr.show = bluerdma_show_gids;
+    dev->gids_attr.store = NULL;
+    
+    // Initialize MAC attribute
+    sysfs_attr_init(&dev->mac_attr.attr);
+    dev->mac_attr.attr.name = "mac";
+    dev->mac_attr.attr.mode = 0444; // read-only
+    dev->mac_attr.show = bluerdma_show_mac;
+    dev->mac_attr.store = NULL;
+}
+
 static int bluerdma_new_testing(void)
 {
 	struct bluerdma_dev *dev;
@@ -349,6 +400,9 @@ static int bluerdma_ib_device_add(struct pci_dev *pdev)
 		ib_set_device_ops(ibdev, &bluerdma_device_ops);
 		pr_info("ib_set_device_ops ok for index %d\n", i);
 
+		// Initialize sysfs attributes
+		bluerdma_init_sysfs_attrs(testing_dev[i]);
+
 		ret = ib_register_device(ibdev, "bluerdma%d", NULL);
 		if (ret) {
 			pr_err("ib_register_device failed for index %d\n", i);
@@ -359,6 +413,18 @@ static int bluerdma_ib_device_add(struct pci_dev *pdev)
 			return ret;
 		}
 		pr_info("ib_register_device %s\n", ibdev->name);
+		
+		// Create sysfs attributes
+		ret = device_create_file(&ibdev->dev, &testing_dev[i]->gids_attr);
+		if (ret) {
+			pr_err("Failed to create gids sysfs file for device %d\n", i);
+		}
+		
+		ret = device_create_file(&ibdev->dev, &testing_dev[i]->mac_attr);
+		if (ret) {
+			pr_err("Failed to create mac sysfs file for device %d\n", i);
+		}
+		
 		if (testing_dev[i]->netdev) {
 			ret = ib_device_set_netdev(ibdev,
 						   testing_dev[i]->netdev, 1);
@@ -381,6 +447,10 @@ static void bluerdma_ib_device_remove(struct pci_dev *pdev)
 	// struct bluerdma_dev *dev = pci_get_drvdata(pdev);
 	for (int i = 0; i < N_TESTING; i++) {
 		if (testing_dev[i]) {
+			// Remove sysfs attributes
+			device_remove_file(&testing_dev[i]->ibdev.dev, &testing_dev[i]->gids_attr);
+			device_remove_file(&testing_dev[i]->ibdev.dev, &testing_dev[i]->mac_attr);
+			
 			ib_unregister_device(&testing_dev[i]->ibdev);
 			pr_info("ib_unregister_device ok for index %d\n", i);
 		}
