@@ -218,3 +218,27 @@ int bluerdma_query_gid(struct ib_device *ibdev, u32 port_num, int index,
 	
 	return 0;
 }
+
+int bluerdma_add_gid(const struct ib_gid_attr *attr, void **context)
+{
+	struct bluerdma_dev *dev = to_bdev(attr->device);
+	
+	pr_info("bluerdma_add_gid: device %d, port %u, index %u\n", 
+		dev->id, attr->port_num, attr->index);
+	
+	/* In a real driver, we would add the GID to hardware here */
+	
+	return 0;
+}
+
+int bluerdma_del_gid(const struct ib_gid_attr *attr, void **context)
+{
+	struct bluerdma_dev *dev = to_bdev(attr->device);
+	
+	pr_info("bluerdma_del_gid: device %d, port %u, index %u\n", 
+		dev->id, attr->port_num, attr->index);
+	
+	/* In a real driver, we would remove the GID from hardware here */
+	
+	return 0;
+}

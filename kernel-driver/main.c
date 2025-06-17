@@ -276,6 +276,8 @@ static const struct ib_device_ops bluerdma_device_ops = {
 
 	.query_gid = bluerdma_query_gid,
 	.query_pkey = bluerdma_query_pkey,
+	.add_gid = bluerdma_add_gid,
+	.del_gid = bluerdma_del_gid,
 
 	// init size
 	// INIT_RDMA_OBJ_SIZE(ib_ah, bluerdma_ah, ibah),
