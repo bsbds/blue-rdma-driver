@@ -34,6 +34,7 @@ struct bluerdma_dev {
 	struct napi_struct napi;
 	u8 mac_addr[ETH_ALEN];
 	spinlock_t tx_lock;
+	spinlock_t mac_lock;  /* Lock for MAC address protection */
 	
 	/* GID table */
 	struct bluerdma_gid_entry gid_table[BLUERDMA_GID_TABLE_SIZE];

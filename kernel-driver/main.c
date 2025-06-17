@@ -133,10 +133,15 @@ static void bluerdma_netdev_setup(struct net_device *netdev)
 
 	/* Set MAC address */
 	eth_hw_addr_random(netdev);
+	
+	/* Copy MAC address to our device structure with lock protection */
+	spin_lock(&dev->mac_lock);
 	memcpy(dev->mac_addr, netdev->dev_addr, ETH_ALEN);
+	spin_unlock(&dev->mac_lock);
 
 	/* Initialize locks */
 	spin_lock_init(&dev->tx_lock);
+	spin_lock_init(&dev->mac_lock);
 	
 	/* Start with carrier off - will be turned on when opened */
 	netif_carrier_off(netdev);
@@ -249,8 +254,19 @@ static ssize_t bluerdma_show_mac(struct device *dev,
                                 char *buf)
 {
     struct bluerdma_dev *bdev = to_bdev(container_of(dev, struct ib_device, dev));
+    ssize_t len;
     
-    return scnprintf(buf, PAGE_SIZE, "%pM\n", bdev->mac_addr);
+    if (bdev->netdev) {
+        // For netdev, we can use the dev_addr directly
+        len = scnprintf(buf, PAGE_SIZE, "%pM\n", bdev->netdev->dev_addr);
+    } else {
+        // When using the stored MAC address, protect with lock
+        spin_lock(&bdev->mac_lock);
+        len = scnprintf(buf, PAGE_SIZE, "%pM\n", bdev->mac_addr);
+        spin_unlock(&bdev->mac_lock);
+    }
+    
+    return len;
 }
 
 // Initialize sysfs attributes
