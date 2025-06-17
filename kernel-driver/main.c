@@ -256,7 +256,7 @@ static ssize_t bluerdma_show_gids(struct device *dev,
     for (i = 0; i < BLUERDMA_GID_TABLE_SIZE; i++) {
         if (bdev->gid_table[i].valid) {
             len += scnprintf(buf + len, PAGE_SIZE - len, 
-                           "%d: %pI6\n", i, bdev->gid_table[i].gid.raw);
+                           "%pI6\n", bdev->gid_table[i].gid.raw);
         }
     }
     
