@@ -225,7 +225,7 @@ static ssize_t bluerdma_show_gids(struct device *dev,
                                  struct device_attribute *attr,
                                  char *buf)
 {
-    struct bluerdma_dev *bdev = container_of(attr, struct bluerdma_dev, gids_attr);
+    struct bluerdma_dev *bdev = to_bdev(container_of(dev, struct ib_device, dev));
     ssize_t len = 0;
     int i;
     
@@ -248,7 +248,7 @@ static ssize_t bluerdma_show_mac(struct device *dev,
                                 struct device_attribute *attr,
                                 char *buf)
 {
-    struct bluerdma_dev *bdev = container_of(attr, struct bluerdma_dev, mac_attr);
+    struct bluerdma_dev *bdev = to_bdev(container_of(dev, struct ib_device, dev));
     
     return scnprintf(buf, PAGE_SIZE, "%pM\n", bdev->mac_addr);
 }
