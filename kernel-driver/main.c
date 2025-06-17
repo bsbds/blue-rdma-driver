@@ -3,6 +3,10 @@
 #include <linux/module.h>
 #include <linux/etherdevice.h>
 #include <linux/netdevice.h>
+#include <linux/inetdevice.h>
+#include <linux/workqueue.h>
+#include <linux/if_arp.h>
+#include <net/ip.h>
 
 #include "bluerdma.h"
 #include "verbs.h"
@@ -56,6 +60,9 @@ static int bluerdma_netdev_open(struct net_device *netdev)
 
 	/* Update RDMA port state */
 	dev->state = IB_PORT_ACTIVE;
+	
+	/* Start address maintenance work */
+	schedule_delayed_work(&dev->addr_work, msecs_to_jiffies(1000));
 
 	return 0;
 }
@@ -70,6 +77,9 @@ static int bluerdma_netdev_stop(struct net_device *netdev)
 	/* Stop the network interface */
 	napi_disable(&dev->napi);
 	netif_stop_queue(netdev);
+	
+	/* Cancel address maintenance work */
+	cancel_delayed_work_sync(&dev->addr_work);
 
 	/* Update RDMA port state */
 	dev->state = IB_PORT_DOWN;
@@ -135,6 +145,120 @@ static void bluerdma_netdev_setup(struct net_device *netdev)
 
 	/* Initialize locks */
 	spin_lock_init(&dev->tx_lock);
+	
+	/* Initialize address maintenance work */
+	INIT_DELAYED_WORK(&dev->addr_work, bluerdma_addr_work_handler);
+}
+
+/* Initialize IPv4 address table */
+static void bluerdma_init_ipv4_table(struct bluerdma_dev *dev)
+{
+	int i;
+	
+	spin_lock_init(&dev->ipv4_lock);
+	
+	for (i = 0; i < BLUERDMA_MAX_IPV4_ADDRS; i++) {
+		dev->ipv4_table[i].valid = false;
+	}
+}
+
+/* Address maintenance work function */
+static void bluerdma_addr_work_handler(struct work_struct *work)
+{
+	struct bluerdma_dev *dev = container_of(work, struct bluerdma_dev, addr_work.work);
+	struct net_device *netdev = dev->netdev;
+	struct in_device *in_dev;
+	struct in_ifaddr *ifa;
+	int i, found;
+	
+	if (!netdev || !netif_running(netdev))
+		goto reschedule;
+	
+	/* Check and restore IPv6 GIDs */
+	spin_lock(&dev->gid_lock);
+	for (i = 0; i < BLUERDMA_GID_TABLE_SIZE; i++) {
+		if (dev->gid_table[i].persistent && !dev->gid_table[i].valid) {
+			/* Restore persistent GID that was removed */
+			pr_info("Restoring persistent GID at index %d\n", i);
+			dev->gid_table[i].valid = true;
+			
+			/* In a real driver, we would program the GID to hardware here */
+		}
+	}
+	spin_unlock(&dev->gid_lock);
+	
+	/* Check IPv4 addresses */
+	rtnl_lock();
+	in_dev = __in_dev_get_rtnl(netdev);
+	if (in_dev) {
+		/* First, mark all our stored addresses as not found */
+		spin_lock(&dev->ipv4_lock);
+		for (i = 0; i < BLUERDMA_MAX_IPV4_ADDRS; i++) {
+			if (dev->ipv4_table[i].valid) {
+				found = 0;
+				
+				/* Check if this address still exists on the interface */
+				for (ifa = in_dev->ifa_list; ifa; ifa = ifa->ifa_next) {
+					if (ifa->ifa_address == dev->ipv4_table[i].addr) {
+						found = 1;
+						break;
+					}
+				}
+				
+				/* If not found, re-add it */
+				if (!found) {
+					pr_info("Restoring IPv4 address %pI4 on %s\n", 
+						&dev->ipv4_table[i].addr, netdev->name);
+					
+					/* Add the address back to the interface */
+					in_dev_set_addr(netdev, dev->ipv4_table[i].addr, 
+							dev->ipv4_table[i].netmask, 0);
+				}
+			}
+		}
+		spin_unlock(&dev->ipv4_lock);
+		
+		/* Now check for new addresses to store */
+		spin_lock(&dev->ipv4_lock);
+		for (ifa = in_dev->ifa_list; ifa; ifa = ifa->ifa_next) {
+			found = 0;
+			
+			/* Skip link-local addresses */
+			if (ipv4_is_loopback(ifa->ifa_address) || 
+			    ipv4_is_linklocal(ifa->ifa_address))
+				continue;
+				
+			/* Check if we already have this address stored */
+			for (i = 0; i < BLUERDMA_MAX_IPV4_ADDRS; i++) {
+				if (dev->ipv4_table[i].valid && 
+				    dev->ipv4_table[i].addr == ifa->ifa_address) {
+					found = 1;
+					break;
+				}
+			}
+			
+			/* If not found, store it */
+			if (!found) {
+				/* Find an empty slot */
+				for (i = 0; i < BLUERDMA_MAX_IPV4_ADDRS; i++) {
+					if (!dev->ipv4_table[i].valid) {
+						dev->ipv4_table[i].addr = ifa->ifa_address;
+						dev->ipv4_table[i].netmask = ifa->ifa_mask;
+						dev->ipv4_table[i].valid = true;
+						pr_info("Stored new IPv4 address %pI4 on %s\n", 
+							&ifa->ifa_address, netdev->name);
+						break;
+					}
+				}
+			}
+		}
+		spin_unlock(&dev->ipv4_lock);
+	}
+	rtnl_unlock();
+	
+reschedule:
+	/* Reschedule the work every 5 seconds */
+	schedule_delayed_work(&dev->addr_work, msecs_to_jiffies(5000));
 }
 
 static void bluerdma_init_gid_table(struct bluerdma_dev *dev)
@@ -146,6 +270,7 @@ static void bluerdma_init_gid_table(struct bluerdma_dev *dev)
 	for (i = 0; i < BLUERDMA_GID_TABLE_SIZE; i++) {
 		memset(&dev->gid_table[i], 0, sizeof(struct bluerdma_gid_entry));
 		dev->gid_table[i].valid = false;
+		dev->gid_table[i].persistent = false;
 	}
 	
 	/* Initialize the default GID (index 0) based on MAC address */
@@ -159,6 +284,7 @@ static void bluerdma_init_gid_table(struct bluerdma_dev *dev)
 		memcpy(&dev->gid_table[0].gid.raw[12], &dev->mac_addr[2], 4);
 		
 		dev->gid_table[0].valid = true;
+		dev->gid_table[0].persistent = true;  /* Mark as persistent */
 		
 		pr_debug("Initialized default GID for device %d: %pI6\n", 
 			 dev->id, dev->gid_table[0].gid.raw);
@@ -189,6 +315,9 @@ static int bluerdma_create_netdev(struct bluerdma_dev *dev, int id)
 	
 	/* Initialize GID table after MAC address is set */
 	bluerdma_init_gid_table(dev);
+	
+	/* Initialize IPv4 address table */
+	bluerdma_init_ipv4_table(dev);
 
 	ret = register_netdev(netdev);
 	if (ret) {
@@ -207,6 +336,9 @@ static int bluerdma_create_netdev(struct bluerdma_dev *dev, int id)
 static void bluerdma_destroy_netdev(struct bluerdma_dev *dev)
 {
 	if (dev->netdev) {
+		/* Cancel any pending work */
+		cancel_delayed_work_sync(&dev->addr_work);
+		
 		unregister_netdev(dev->netdev);
 		free_netdev(dev->netdev);
 		dev->netdev = NULL;

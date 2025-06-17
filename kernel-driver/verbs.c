@@ -248,6 +248,11 @@ int bluerdma_add_gid(const struct ib_gid_attr *attr, void **context)
 	memcpy(&dev->gid_table[attr->index].attr, attr, sizeof(struct ib_gid_attr));
 	dev->gid_table[attr->index].valid = true;
 	
+	/* Mark index 0 as persistent (our default GID) */
+	if (attr->index == 0) {
+		dev->gid_table[attr->index].persistent = true;
+	}
+	
 	pr_debug("bluerdma_add_gid: added GID %pI6 at index %u\n", 
 		 attr->gid.raw, attr->index);
 	

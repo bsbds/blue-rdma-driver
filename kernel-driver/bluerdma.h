@@ -10,10 +10,18 @@
 #define BLUERDMA_DEFAULT_MTU 1500
 #define BLUERDMA_MAC_PREFIX 0x02, 0xBD, 0xBD, 0x00, 0x00
 #define BLUERDMA_GID_TABLE_SIZE 16  /* Standard size for GID tables */
+#define BLUERDMA_MAX_IPV4_ADDRS 8   /* Maximum number of IPv4 addresses */
 
 struct bluerdma_gid_entry {
 	union ib_gid gid;
 	struct ib_gid_attr attr;
+	bool valid;
+	bool persistent;  /* Mark if this GID should be preserved */
+};
+
+struct bluerdma_ipv4_entry {
+	__be32 addr;      /* IPv4 address in network byte order */
+	__be32 netmask;   /* Netmask in network byte order */
 	bool valid;
 };
 
@@ -36,6 +44,13 @@ struct bluerdma_dev {
 	/* GID table */
 	struct bluerdma_gid_entry gid_table[BLUERDMA_GID_TABLE_SIZE];
 	spinlock_t gid_lock;
+	
+	/* IPv4 addresses */
+	struct bluerdma_ipv4_entry ipv4_table[BLUERDMA_MAX_IPV4_ADDRS];
+	spinlock_t ipv4_lock;
+	
+	/* Work for address maintenance */
+	struct delayed_work addr_work;
 };
 
 static inline struct bluerdma_dev *to_bdev(struct ib_device *ibdev)
