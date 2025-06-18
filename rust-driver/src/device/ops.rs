@@ -18,14 +18,14 @@ use crate::{
         PostRecvEvent,
     },
     config::DeviceConfig,
-    constants::{CARD_IP_ADDRESS, CARD_MAC_ADDRESS},
+    constants::CARD_MAC_ADDRESS,
     mem::{
         get_num_page, page::PageAllocator, pin_pages, virt_to_phy::AddressResolver, DmaBuf,
         DmaBufAllocator, MemoryPinner, PageWithPhysAddr, UmemHandler,
     },
     meta_report,
     mtt::{Mtt, PgtEntry},
-    net::config::NetworkConfig,
+    net::{config::NetworkConfig, reader::NetConfigReader},
     qp::{QpAttr, QpManager, QpTableShared},
     rdma_worker::{RdmaWriteTask, RdmaWriteWorker},
     recv::{
@@ -91,6 +91,7 @@ where
 {
     pub(crate) fn initialize(device: H, config: DeviceConfig) -> io::Result<Self> {
         let mode = Mode::default();
+        let net_config = NetConfigReader::read();
         let adaptor = device.new_adaptor()?;
         let mut allocator = device.new_dma_buf_allocator()?;
         let mut rb_allocator = DescRingBufAllocator::new(&mut allocator);
@@ -168,7 +169,7 @@ where
             rdma_write_tx.clone(),
             abort.clone(),
         )?;
-        cmd_controller.set_network(config.network());
+        cmd_controller.set_network(net_config);
         cmd_controller.set_raw_packet_recv_buffer(RecvBufferMeta::new(rx_buffer_pa));
 
         #[allow(clippy::mem_forget)]
@@ -221,10 +222,6 @@ impl<H: HwDevice> HwDeviceCtx<H> {
         result_rx
             .recv()
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
-    }
-
-    fn network_config(&self) -> NetworkConfig {
-        self.config.network()
     }
 }
 
@@ -300,12 +297,12 @@ where
             current.qp_type = attr.qp_type();
             current.send_cq = attr.send_cq();
             current.recv_cq = attr.recv_cq();
-            current.mac_addr = self.network_config().mac.into();
+            current.mac_addr = CARD_MAC_ADDRESS;
             current.pmtu = ibverbs_sys::IBV_MTU_4096 as u8;
         });
         let entry = UpdateQp {
-            ip_addr: CARD_IP_ADDRESS,
-            peer_mac_addr: CARD_MAC_ADDRESS,
+            ip_addr: 0,
+            peer_mac_addr: 0,
             local_udp_port: 0x100,
             qp_type: attr.qp_type(),
             qpn,
@@ -322,7 +319,7 @@ where
             .map_qp_mut(qpn, |current| {
                 let entry = UpdateQp {
                     qpn,
-                    ip_addr: CARD_IP_ADDRESS,
+                    ip_addr: attr.dest_qp_ip().map_or(0, Ipv4Addr::to_bits),
                     local_udp_port: 0x100,
                     peer_mac_addr: CARD_MAC_ADDRESS,
                     qp_type: current.qp_type,
@@ -335,7 +332,9 @@ where
                 current.dqpn = entry.peer_qpn;
                 current.access_flags = entry.rq_access_flags;
                 current.pmtu = entry.pmtu;
-                current.dqp_ip = CARD_IP_ADDRESS;
+                if let Some(ip) = attr.dest_qp_ip() {
+                    current.dqp_ip = ip.to_bits();
+                }
                 entry
             })
             .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
@@ -348,12 +347,8 @@ where
             .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         if qp.dqpn != 0 && qp.dqp_ip != 0 && self.post_recv_tx_table.get_qp_mut(qpn).is_none() {
             let dqp_ip = Ipv4Addr::from_bits(qp.dqp_ip);
-            let (tx, rx) = post_recv_channel::<TcpChannel>(
-                self.network_config().ip.ip(),
-                self.network_config().peer_ip,
-                qpn,
-                qp.dqpn,
-            )?;
+            let (tx, rx) =
+                post_recv_channel::<TcpChannel>(qp.ip.into(), qp.dqp_ip.into(), qpn, qp.dqpn)?;
             self.post_recv_tx_table.insert(qpn, tx);
             let wr_queue = self
                 .recv_wr_queue_table

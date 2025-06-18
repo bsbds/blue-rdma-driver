@@ -21,6 +21,7 @@ pub(crate) struct QpAttr {
     pub(crate) qp_type: u8,
     pub(crate) qpn: u32,
     pub(crate) dqpn: u32,
+    pub(crate) ip: u32,
     pub(crate) dqp_ip: u32,
     pub(crate) mac_addr: u64,
     pub(crate) pmtu: u8,

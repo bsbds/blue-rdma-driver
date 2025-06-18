@@ -3,11 +3,11 @@ use std::{io, net::Ipv4Addr, ptr};
 
 use ipnetwork::{IpNetwork, Ipv4Network};
 
+use crate::constants::TEST_CARD_IP_ADDRESS;
 use crate::{
     ack_timeout::AckTimeoutConfig,
     completion::Completion,
     config::{ConfigLoader, DeviceConfig},
-    constants::CARD_IP_ADDRESS,
     mem::{
         page::EmulatedPageAllocator, sim_alloc, virt_to_phy::PhysAddrResolverEmulated,
         EmulatedUmemHandler,
@@ -167,14 +167,8 @@ impl BlueRdmaCore {
             _ => unreachable!("unexpected sysfs_name"),
         };
 
-        let network = NetworkConfig {
-            ip: Ipv4Network::new(Ipv4Addr::from_bits(CARD_IP_ADDRESS), 24).unwrap(),
-            peer_ip: Ipv4Addr::from_bits(CARD_IP_ADDRESS),
-            gateway: Ipv4Addr::new(127, 0, 0, 1).into(),
-            mac: MacAddress([0x0A, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA]),
-        };
         let ack = AckTimeoutConfig::new(16, 18, 100);
-        let config = DeviceConfig { network, ack };
+        let config = DeviceConfig { ack };
         // (check_duration, local_ack_timeout) : (256ms, 1s) because emulator is slow
         HwDeviceCtx::initialize(device, config)
     }

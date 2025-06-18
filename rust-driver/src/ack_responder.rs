@@ -13,7 +13,7 @@ use pnet::{
 };
 
 use crate::{
-    constants::{CARD_IP_ADDRESS, PSN_MASK},
+    constants::{CARD_MAC_ADDRESS, CARD_MAC_ADDRESS_OCTETS, PSN_MASK},
     qp::{QpAttr, QpTableShared},
     simple_nic::FrameTx,
     spawner::SingleThreadTaskWorker,
@@ -52,21 +52,17 @@ impl SingleThreadTaskWorker for AckResponder {
 
     fn process(&mut self, task: Self::Task) {
         const NUM_BITS_STRIDE: u8 = 16;
-        let Some(dqpn) = self.qp_table.get_qp(task.qpn()).map(|attr| attr.dqpn) else {
-            error!("invalid qpn");
-            return;
-        };
+        let qp_attr = self.qp_table.get_qp(task.qpn()).expect("invalid qpn");
+        let frame_builder = AckFrameBuilder::new(qp_attr.ip, qp_attr.dqp_ip, qp_attr.dqpn);
         let frame = match task {
             AckResponse::Ack { qpn, msn, last_psn } => {
-                AckFrameBuilder::build_ack(last_psn, u128::MAX, 0.into(), 0, dqpn, false, false)
+                frame_builder.build_ack(last_psn, u128::MAX, 0.into(), 0, false, false)
             }
             AckResponse::Nak {
                 qpn,
                 base_psn,
                 ack_req_packet_psn,
-            } => {
-                AckFrameBuilder::build_ack(ack_req_packet_psn + 1, 0, base_psn, 0, dqpn, true, true)
-            }
+            } => frame_builder.build_ack(ack_req_packet_psn + 1, 0, base_psn, 0, true, true),
         };
         if let Err(e) = self.raw_frame_tx.send(&frame) {
             error!("failed to send ack frame");
@@ -86,7 +82,11 @@ impl AckResponder {
     }
 }
 
-struct AckFrameBuilder;
+struct AckFrameBuilder {
+    src_ip: u32,
+    dst_ip: u32,
+    dqpn: u32,
+}
 
 #[allow(
     clippy::indexing_slicing,
@@ -96,25 +96,33 @@ struct AckFrameBuilder;
     clippy::big_endian_bytes
 )]
 impl AckFrameBuilder {
+    fn new(src_ip: u32, dst_ip: u32, dqpn: u32) -> Self {
+        Self {
+            src_ip,
+            dst_ip,
+            dqpn,
+        }
+    }
+
     fn build_ack(
+        &self,
         now_psn: Psn,
         now_bitmap: u128,
         pre_psn: Psn,
         prev_bitmap: u128,
-        dqpn: u32,
         is_packet_loss: bool,
         is_window_slided: bool,
     ) -> Vec<u8> {
         const TRANS_TYPE_RC: u8 = 0x00;
         const OPCODE_ACKNOWLEDGE: u8 = 0x11;
         const PAYLOAD_SIZE: usize = 48;
-        let mac = MacAddr::new(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x0A);
+        let mac = MacAddr::from(CARD_MAC_ADDRESS_OCTETS);
         let mut payload = [0u8; PAYLOAD_SIZE];
 
         let mut bth = Bth::default();
         bth.set_opcode(u5::from_u8(OPCODE_ACKNOWLEDGE));
         bth.set_psn(u24::from_u32(now_psn.into_inner()));
-        bth.set_dqpn(u24::from_u32(dqpn));
+        bth.set_dqpn(u24::from_u32(self.dqpn));
         bth.set_trans_type(u3::from_u8(TRANS_TYPE_RC));
         payload[..12].copy_from_slice(&bth.value.to_be_bytes());
 
@@ -127,10 +135,16 @@ impl AckFrameBuilder {
         payload[28..44].copy_from_slice(&now_bitmap.to_be_bytes());
         payload[44..].copy_from_slice(&aeth_seg0.value.to_be_bytes());
 
-        Self::build_ethernet_frame(mac, mac, &payload)
+        Self::build_ethernet_frame(self.src_ip, self.dst_ip, mac, mac, &payload)
     }
 
-    fn build_ethernet_frame(src_mac: MacAddr, dst_mac: MacAddr, payload: &[u8]) -> Vec<u8> {
+    fn build_ethernet_frame(
+        src_ip: u32,
+        dst_ip: u32,
+        src_mac: MacAddr,
+        dst_mac: MacAddr,
+        payload: &[u8],
+    ) -> Vec<u8> {
         const UDP_PORT: u16 = 4791;
         const ETH_HEADER_LEN: usize = 14;
         const IP_HEADER_LEN: usize = 20;
@@ -158,8 +172,8 @@ impl AckFrameBuilder {
         ipv4_packet.set_fragment_offset(0);
         ipv4_packet.set_ttl(64);
         ipv4_packet.set_next_level_protocol(IpNextHeaderProtocols::Udp);
-        ipv4_packet.set_source(Ipv4Addr::from_bits(CARD_IP_ADDRESS));
-        ipv4_packet.set_destination(Ipv4Addr::from_bits(CARD_IP_ADDRESS));
+        ipv4_packet.set_source(Ipv4Addr::from_bits(src_ip));
+        ipv4_packet.set_destination(Ipv4Addr::from_bits(dst_ip));
         ipv4_packet.set_checksum(ipv4_packet.get_checksum());
 
         let mut udp_packet = MutableUdpPacket::new(&mut buffer[ETH_HEADER_LEN + IP_HEADER_LEN..])

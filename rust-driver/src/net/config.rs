@@ -109,7 +109,7 @@ pub struct NetworkConfig {
     /// Peer ip
     pub peer_ip: Ipv4Addr,
     /// Gateway IP address
-    pub gateway: IpAddr,
+    pub gateway: Option<Ipv4Addr>,
     /// MAC address
     pub mac: MacAddress,
 }
@@ -120,7 +120,7 @@ impl Default for NetworkConfig {
         Self {
             ip: Ipv4Network::new(Ipv4Addr::new(0, 0, 0, 0), 0).expect("invalid address"),
             peer_ip: Ipv4Addr::new(0, 0, 0, 0),
-            gateway: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            gateway: None,
             mac: MacAddress::default(),
         }
     }
@@ -171,7 +171,7 @@ mod tests {
         fn resolve_dynamic(&self) -> io::Result<NetworkConfig> {
             Ok(NetworkConfig {
                 ip: Ipv4Network::new("10.0.0.2".parse().unwrap(), 24).unwrap(),
-                gateway: "10.0.0.1".parse().unwrap(),
+                gateway: Some("10.0.0.1".parse().unwrap()),
                 mac: MacAddress([0; 6]),
                 peer_ip: "10.0.0.1".parse().unwrap(),
             })
