@@ -30,7 +30,7 @@ impl NetConfigReader {
             .into_iter()
             .next()
             .expect("no ipv4 address configured");
-        let ip = Ipv4Network::new(ip.network(), ip.prefix_len).expect("invalid address format");
+        let ip = Ipv4Network::new(ip.addr, ip.prefix_len).expect("invalid address format");
         let gateway = interface.gateway.map(|x| match x.ip_addr {
             IpAddr::V4(ip) => ip,
             IpAddr::V6(ip) => unreachable!(),

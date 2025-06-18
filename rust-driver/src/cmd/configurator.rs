@@ -9,6 +9,7 @@ use ipnetwork::IpNetwork;
 use parking_lot::Mutex;
 
 use crate::{
+    constants::CARD_MAC_ADDRESS,
     descriptors::{
         cmd::{CmdQueueReqDescUpdateMrTable, CmdQueueReqDescUpdatePGT},
         CmdQueueReqDescQpManagement, CmdQueueReqDescSetNetworkParam,
@@ -155,8 +156,8 @@ impl<Dev: DeviceAdaptor> CommandConfigurator<Dev> {
             0,
             param.gateway.map_or(0, Ipv4Addr::to_bits),
             param.ip.mask().to_bits(),
-            param.ip.network().to_bits(),
-            param.mac.into(),
+            param.ip.ip().to_bits(),
+            CARD_MAC_ADDRESS,
         );
         let mut qp = self.cmd_qp.lock();
         let mut update = qp.update();

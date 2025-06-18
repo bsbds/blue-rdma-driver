@@ -2,6 +2,7 @@ use std::{
     io, iter,
     net::Ipv4Addr,
     sync::{atomic::AtomicBool, Arc},
+    thread::current,
     time::Duration,
 };
 
@@ -317,9 +318,12 @@ where
         let entry = self
             .qp_attr_table
             .map_qp_mut(qpn, |current| {
+                let current_ip = (current.dqp_ip != 0).then_some(current.dqp_ip);
+                let attr_ip = attr.dest_qp_ip().map(Ipv4Addr::to_bits);
+                let ip_addr = attr_ip.or(current_ip).unwrap_or(0);
                 let entry = UpdateQp {
                     qpn,
-                    ip_addr: attr.dest_qp_ip().map_or(0, Ipv4Addr::to_bits),
+                    ip_addr,
                     local_udp_port: 0x100,
                     peer_mac_addr: CARD_MAC_ADDRESS,
                     qp_type: current.qp_type,
@@ -332,9 +336,7 @@ where
                 current.dqpn = entry.peer_qpn;
                 current.access_flags = entry.rq_access_flags;
                 current.pmtu = entry.pmtu;
-                if let Some(ip) = attr.dest_qp_ip() {
-                    current.dqp_ip = ip.to_bits();
-                }
+                current.dqp_ip = ip_addr;
                 entry
             })
             .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
