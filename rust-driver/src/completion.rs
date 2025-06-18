@@ -118,7 +118,9 @@ impl SingleThreadTaskWorker for CompletionWorker {
                             last_psn: event.meta().end_psn,
                         });
                     }
-                    recv_cq.push_back(completion);
+                    if let Some(c) = completion {
+                        recv_cq.push_back(c);
+                    }
                 }
             }
         }
@@ -245,7 +247,7 @@ impl QueuePairMessageTracker {
         Some((event, completion))
     }
 
-    fn poll_recv_completion(&mut self) -> Option<(RecvEvent, Completion)> {
+    fn poll_recv_completion(&mut self) -> Option<(RecvEvent, Option<Completion>)> {
         let event = self.merge.pop_recv()?;
         let completion = match event.op {
             RecvEventOp::WriteWithImm { imm } => Some(Completion::RecvRdmaWithImm { imm }),
@@ -267,7 +269,7 @@ impl QueuePairMessageTracker {
             RecvEventOp::RecvRead | RecvEventOp::Write => None,
         };
 
-        completion.map(|c| (event, c))
+        Some((event, completion))
     }
 }
 
