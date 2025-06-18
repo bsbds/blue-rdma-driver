@@ -15,15 +15,10 @@ pub(crate) enum ConfigError {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(crate) struct DeviceConfig {
-    pub(crate) network: NetworkConfig,
     pub(crate) ack: AckTimeoutConfig,
 }
 
 impl DeviceConfig {
-    pub(crate) fn network(&self) -> NetworkConfig {
-        self.network
-    }
-
     pub(crate) fn ack(&self) -> AckTimeoutConfig {
         self.ack
     }
