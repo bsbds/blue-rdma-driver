@@ -135,7 +135,6 @@ impl BlueRdmaCore {
         let config = ConfigLoader::load_default()?;
         let device = PciHwDevice::open_default()?;
         device.reset()?;
-        device.init_dma_engine()?;
         #[cfg(feature = "debug_csrs")]
         device.set_custom()?;
         let mut ctx = HwDeviceCtx::initialize(device, config)?;
