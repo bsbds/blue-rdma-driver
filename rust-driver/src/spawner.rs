@@ -46,6 +46,8 @@ pub(crate) trait SingleThreadTaskWorker {
 
     fn process(&mut self, task: Self::Task);
 
+    fn maintainance(&mut self);
+
     fn spawn(mut self, rx: TaskRx<Self::Task>, name: &str, abort: AbortSignal)
     where
         Self: Sized + Send + 'static,
@@ -99,6 +101,7 @@ pub(crate) trait SingleThreadTaskWorker {
                     for task in rx.try_iter() {
                         self.process(task);
                     }
+                    self.maintainance();
                 }
                 info!("worker {name} exited");
             })

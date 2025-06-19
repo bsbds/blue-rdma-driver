@@ -84,6 +84,8 @@ impl SingleThreadTaskWorker for RdmaWriteWorker {
             }
         }
     }
+
+    fn maintainance(&mut self) {}
 }
 
 impl RdmaWriteWorker {

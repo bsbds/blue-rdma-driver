@@ -190,6 +190,9 @@ impl SingleThreadTaskWorker for QpAckTimeoutWorker {
                 }
             }
         }
+    }
+
+    fn maintainance(&mut self) {
         for (index, timer) in self.timer_table.iter_mut().enumerate() {
             match timer.check_timeout() {
                 TimerResult::Ok => {}

@@ -97,6 +97,8 @@ impl SingleThreadTaskWorker for PacketRetransmitWorker {
             }
         }
     }
+
+    fn maintainance(&mut self) {}
 }
 
 impl PacketRetransmitWorker {

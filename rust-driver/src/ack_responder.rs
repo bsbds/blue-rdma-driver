@@ -68,6 +68,8 @@ impl SingleThreadTaskWorker for AckResponder {
             error!("failed to send ack frame");
         }
     }
+
+    fn maintainance(&mut self) {}
 }
 
 impl AckResponder {

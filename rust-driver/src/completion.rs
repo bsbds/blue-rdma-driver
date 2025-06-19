@@ -125,6 +125,8 @@ impl SingleThreadTaskWorker for CompletionWorker {
             }
         }
     }
+
+    fn maintainance(&mut self) {}
 }
 
 impl CompletionWorker {
