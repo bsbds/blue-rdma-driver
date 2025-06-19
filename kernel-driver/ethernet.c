@@ -18,15 +18,13 @@ static netdev_tx_t bluerdma_netdev_xmit(struct sk_buff *skb,
 
 	spin_lock_irqsave(&dev->tx_lock, flags);
 
-	/* In a real driver, we would DMA the packet to hardware here */
+	/* TODO: DMA the packet to hardware */
 
-	/* Update statistics */
 	netdev->stats.tx_packets++;
 	netdev->stats.tx_bytes += skb->len;
 
 	spin_unlock_irqrestore(&dev->tx_lock, flags);
 
-	/* Free the SKB */
 	dev_kfree_skb_any(skb);
 
 	return NETDEV_TX_OK;
@@ -39,12 +37,10 @@ static int bluerdma_netdev_open(struct net_device *netdev)
 	pr_info("bluerdma_netdev_open: bringing up interface %s\n",
 		netdev->name);
 
-	/* Start the network interface */
 	netif_carrier_on(netdev);
 	netif_start_queue(netdev);
 	napi_enable(&dev->napi);
 
-	/* Update RDMA port state */
 	dev->state = IB_PORT_ACTIVE;
 
 	return 0;
@@ -57,12 +53,10 @@ static int bluerdma_netdev_stop(struct net_device *netdev)
 	pr_info("bluerdma_netdev_stop: shutting down interface %s\n",
 		netdev->name);
 
-	/* Stop the network interface */
 	napi_disable(&dev->napi);
 	netif_stop_queue(netdev);
 	netif_carrier_off(netdev);
 
-	/* Update RDMA port state */
 	dev->state = IB_PORT_DOWN;
 
 	return 0;
@@ -83,9 +77,8 @@ static int bluerdma_napi_poll(struct napi_struct *napi, int budget)
 		container_of(napi, struct bluerdma_dev, napi);
 	int work_done = 0;
 
-	/* In a real driver, we would process received packets here */
+	/* TODO: process received packets */
 
-	/* If we processed all packets, complete NAPI */
 	napi_complete_done(napi, work_done);
 
 	return work_done;
@@ -104,35 +97,28 @@ static void bluerdma_netdev_setup(struct net_device *netdev)
 {
 	struct bluerdma_dev *dev = netdev_priv(netdev);
 
-	/* Set Ethernet device operations */
 	netdev->netdev_ops = &bluerdma_netdev_ops;
 
-	/* Set Ethernet device features */
 	netdev->hw_features = NETIF_F_SG | NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
 			      NETIF_F_RXCSUM;
 	netdev->features = netdev->hw_features;
 
-	/* Set MTU limits */
 	netdev->min_mtu = ETH_MIN_MTU;
 	netdev->max_mtu = ETH_MAX_MTU;
 	netdev->mtu = BLUERDMA_DEFAULT_MTU;
 
-	/* Initialize NAPI */
 	netif_napi_add(netdev, &dev->napi, bluerdma_napi_poll);
 
-	/* Set MAC address */
+	/* TODO: Read MAC address from device */
 	eth_hw_addr_random(netdev);
 
-	/* Copy MAC address to our device structure with lock protection */
 	spin_lock(&dev->mac_lock);
 	memcpy(dev->mac_addr, netdev->dev_addr, ETH_ALEN);
 	spin_unlock(&dev->mac_lock);
 
-	/* Initialize locks */
 	spin_lock_init(&dev->tx_lock);
 	spin_lock_init(&dev->mac_lock);
 
-	/* Start with carrier off - will be turned on when opened */
 	netif_carrier_off(netdev);
 }
 
@@ -172,7 +158,6 @@ static void bluerdma_init_gid_table(struct bluerdma_dev *dev)
 
 	/* Initialize the default GID (index 0) based on MAC address */
 	if (dev->netdev) {
-		/* Create an EUI-64 based GID from the MAC address */
 		mac_to_eui64_gid(dev->mac_addr, &dev->gid_table[0].gid);
 
 		dev->gid_table[0].valid = true;
@@ -204,7 +189,6 @@ int bluerdma_create_netdev(struct bluerdma_dev *dev, int id)
 
 	bluerdma_netdev_setup(netdev);
 
-	/* Initialize GID table after MAC address is set */
 	bluerdma_init_gid_table(dev);
 
 	ret = register_netdev(netdev);
@@ -230,7 +214,6 @@ void bluerdma_destroy_netdev(struct bluerdma_dev *dev)
 	}
 }
 
-// Show function for GIDs
 ssize_t bluerdma_show_gids(struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
@@ -253,7 +236,6 @@ ssize_t bluerdma_show_gids(struct device *dev, struct device_attribute *attr,
 	return len;
 }
 
-// Show function for MAC address
 ssize_t bluerdma_show_mac(struct device *dev, struct device_attribute *attr,
 			  char *buf)
 {
@@ -262,11 +244,9 @@ ssize_t bluerdma_show_mac(struct device *dev, struct device_attribute *attr,
 	ssize_t len;
 
 	if (bdev->netdev) {
-		// For netdev, we can use the dev_addr directly
 		len = scnprintf(buf, PAGE_SIZE, "%pM\n",
 				bdev->netdev->dev_addr);
 	} else {
-		// When using the stored MAC address, protect with lock
 		spin_lock(&bdev->mac_lock);
 		len = scnprintf(buf, PAGE_SIZE, "%pM\n", bdev->mac_addr);
 		spin_unlock(&bdev->mac_lock);
@@ -275,20 +255,17 @@ ssize_t bluerdma_show_mac(struct device *dev, struct device_attribute *attr,
 	return len;
 }
 
-// Initialize sysfs attributes
 void bluerdma_init_sysfs_attrs(struct bluerdma_dev *dev)
 {
-	// Initialize GIDs attribute
 	sysfs_attr_init(&dev->gids_attr.attr);
 	dev->gids_attr.attr.name = "gids";
-	dev->gids_attr.attr.mode = 0444; // read-only
+	dev->gids_attr.attr.mode = 0444;
 	dev->gids_attr.show = bluerdma_show_gids;
 	dev->gids_attr.store = NULL;
 
-	// Initialize MAC attribute
 	sysfs_attr_init(&dev->mac_attr.attr);
 	dev->mac_attr.attr.name = "mac";
-	dev->mac_attr.attr.mode = 0444; // read-only
+	dev->mac_attr.attr.mode = 0444;
 	dev->mac_attr.show = bluerdma_show_mac;
 	dev->mac_attr.store = NULL;
 }

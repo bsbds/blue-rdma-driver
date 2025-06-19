@@ -38,7 +38,6 @@ static int bluerdma_new_testing(void)
 		dev->id = i;
 		pr_info("ib_alloc_device ok for index %d\n", dev->id);
 
-		/* Create network device for this RDMA device */
 		ret = bluerdma_create_netdev(dev, i);
 		if (ret) {
 			pr_err("bluerdma_create_netdev failed for index %d\n",
@@ -146,7 +145,6 @@ static int bluerdma_ib_device_add(struct pci_dev *pdev)
 		ib_set_device_ops(ibdev, &bluerdma_device_ops);
 		pr_info("ib_set_device_ops ok for index %d\n", i);
 
-		// Initialize sysfs attributes
 		bluerdma_init_sysfs_attrs(testing_dev[i]);
 
 		ret = ib_register_device(ibdev, "bluerdma%d", NULL);
@@ -160,7 +158,6 @@ static int bluerdma_ib_device_add(struct pci_dev *pdev)
 		}
 		pr_info("ib_register_device %s\n", ibdev->name);
 
-		// Create sysfs attributes
 		ret = device_create_file(&ibdev->dev,
 					 &testing_dev[i]->gids_attr);
 		if (ret) {
@@ -197,7 +194,6 @@ static void bluerdma_ib_device_remove(struct pci_dev *pdev)
 	// struct bluerdma_dev *dev = pci_get_drvdata(pdev);
 	for (int i = 0; i < N_TESTING; i++) {
 		if (testing_dev[i]) {
-			// Remove sysfs attributes
 			device_remove_file(&testing_dev[i]->ibdev.dev,
 					   &testing_dev[i]->gids_attr);
 			device_remove_file(&testing_dev[i]->ibdev.dev,
