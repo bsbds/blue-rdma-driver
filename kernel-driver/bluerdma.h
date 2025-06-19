@@ -11,7 +11,7 @@
 
 #define BLUERDMA_DEFAULT_MTU 1500
 #define BLUERDMA_MAC_PREFIX 0x02, 0xBD, 0xBD, 0x00, 0x00
-#define BLUERDMA_GID_TABLE_SIZE 16  /* Standard size for GID tables */
+#define BLUERDMA_GID_TABLE_SIZE 16 /* Standard size for GID tables */
 
 /* EUI-64 GID format related constants */
 #define BLUERDMA_GID_PREFIX_DEFAULT 0xfe80 /* Link-local prefix */
@@ -32,17 +32,17 @@ struct bluerdma_dev {
 	enum ib_port_state state;
 
 	int id;
-	
+
 	/* Network device specific */
 	struct napi_struct napi;
 	u8 mac_addr[ETH_ALEN];
 	spinlock_t tx_lock;
-	spinlock_t mac_lock;  /* Lock for MAC address protection */
-	
+	spinlock_t mac_lock; /* Lock for MAC address protection */
+
 	/* GID table */
 	struct bluerdma_gid_entry gid_table[BLUERDMA_GID_TABLE_SIZE];
 	spinlock_t gid_lock;
-	
+
 	/* sysfs attributes */
 	struct device_attribute gids_attr;
 	struct device_attribute mac_attr;

@@ -17,7 +17,6 @@ MODULE_LICENSE("Dual BSD/GPL");
 #define N_TESTING 2
 static struct bluerdma_dev *testing_dev[N_TESTING] = {};
 
-
 static int bluerdma_new_testing(void)
 {
 	struct bluerdma_dev *dev;
@@ -160,18 +159,22 @@ static int bluerdma_ib_device_add(struct pci_dev *pdev)
 			return ret;
 		}
 		pr_info("ib_register_device %s\n", ibdev->name);
-		
+
 		// Create sysfs attributes
-		ret = device_create_file(&ibdev->dev, &testing_dev[i]->gids_attr);
+		ret = device_create_file(&ibdev->dev,
+					 &testing_dev[i]->gids_attr);
 		if (ret) {
-			pr_err("Failed to create gids sysfs file for device %d\n", i);
+			pr_err("Failed to create gids sysfs file for device %d\n",
+			       i);
 		}
-		
-		ret = device_create_file(&ibdev->dev, &testing_dev[i]->mac_attr);
+
+		ret = device_create_file(&ibdev->dev,
+					 &testing_dev[i]->mac_attr);
 		if (ret) {
-			pr_err("Failed to create mac sysfs file for device %d\n", i);
+			pr_err("Failed to create mac sysfs file for device %d\n",
+			       i);
 		}
-		
+
 		if (testing_dev[i]->netdev) {
 			ret = ib_device_set_netdev(ibdev,
 						   testing_dev[i]->netdev, 1);
@@ -195,9 +198,11 @@ static void bluerdma_ib_device_remove(struct pci_dev *pdev)
 	for (int i = 0; i < N_TESTING; i++) {
 		if (testing_dev[i]) {
 			// Remove sysfs attributes
-			device_remove_file(&testing_dev[i]->ibdev.dev, &testing_dev[i]->gids_attr);
-			device_remove_file(&testing_dev[i]->ibdev.dev, &testing_dev[i]->mac_attr);
-			
+			device_remove_file(&testing_dev[i]->ibdev.dev,
+					   &testing_dev[i]->gids_attr);
+			device_remove_file(&testing_dev[i]->ibdev.dev,
+					   &testing_dev[i]->mac_attr);
+
 			ib_unregister_device(&testing_dev[i]->ibdev);
 			pr_info("ib_unregister_device ok for index %d\n", i);
 		}

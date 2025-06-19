@@ -122,7 +122,7 @@ static void bluerdma_netdev_setup(struct net_device *netdev)
 
 	/* Set MAC address */
 	eth_hw_addr_random(netdev);
-	
+
 	/* Copy MAC address to our device structure with lock protection */
 	spin_lock(&dev->mac_lock);
 	memcpy(dev->mac_addr, netdev->dev_addr, ETH_ALEN);
@@ -131,7 +131,7 @@ static void bluerdma_netdev_setup(struct net_device *netdev)
 	/* Initialize locks */
 	spin_lock_init(&dev->tx_lock);
 	spin_lock_init(&dev->mac_lock);
-	
+
 	/* Start with carrier off - will be turned on when opened */
 	netif_carrier_off(netdev);
 }
@@ -143,12 +143,12 @@ static void mac_to_eui64_gid(u8 *mac, union ib_gid *gid)
 	gid->raw[0] = 0xfe;
 	gid->raw[1] = 0x80;
 	memset(&gid->raw[2], 0, 6);
-	
+
 	/* Convert MAC to EUI-64 format:
 	 * MAC: XX:XX:XX:YY:YY:YY becomes XX:XX:XX:FF:FE:YY:YY:YY
 	 * and flip the 7th bit of the first byte
 	 */
-	gid->raw[8] = mac[0] ^ 0x02;  /* Flip universal/local bit */
+	gid->raw[8] = mac[0] ^ 0x02; /* Flip universal/local bit */
 	gid->raw[9] = mac[1];
 	gid->raw[10] = mac[2];
 	gid->raw[11] = 0xFF;
@@ -161,22 +161,23 @@ static void mac_to_eui64_gid(u8 *mac, union ib_gid *gid)
 static void bluerdma_init_gid_table(struct bluerdma_dev *dev)
 {
 	int i;
-	
+
 	spin_lock_init(&dev->gid_lock);
-	
+
 	for (i = 0; i < BLUERDMA_GID_TABLE_SIZE; i++) {
-		memset(&dev->gid_table[i], 0, sizeof(struct bluerdma_gid_entry));
+		memset(&dev->gid_table[i], 0,
+		       sizeof(struct bluerdma_gid_entry));
 		dev->gid_table[i].valid = false;
 	}
-	
+
 	/* Initialize the default GID (index 0) based on MAC address */
 	if (dev->netdev) {
 		/* Create an EUI-64 based GID from the MAC address */
 		mac_to_eui64_gid(dev->mac_addr, &dev->gid_table[0].gid);
-		
+
 		dev->gid_table[0].valid = true;
-		
-		pr_debug("Initialized default GID for device %d: %pI6\n", 
+
+		pr_debug("Initialized default GID for device %d: %pI6\n",
 			 dev->id, dev->gid_table[0].gid.raw);
 	}
 }
@@ -202,7 +203,7 @@ int bluerdma_create_netdev(struct bluerdma_dev *dev, int id)
 	dev->netdev = netdev;
 
 	bluerdma_netdev_setup(netdev);
-	
+
 	/* Initialize GID table after MAC address is set */
 	bluerdma_init_gid_table(dev);
 
@@ -230,63 +231,64 @@ void bluerdma_destroy_netdev(struct bluerdma_dev *dev)
 }
 
 // Show function for GIDs
-ssize_t bluerdma_show_gids(struct device *dev, 
-                          struct device_attribute *attr,
-                          char *buf)
+ssize_t bluerdma_show_gids(struct device *dev, struct device_attribute *attr,
+			   char *buf)
 {
-    struct bluerdma_dev *bdev = to_bdev(container_of(dev, struct ib_device, dev));
-    ssize_t len = 0;
-    int i;
-    
-    spin_lock(&bdev->gid_lock);
-    
-    for (i = 0; i < BLUERDMA_GID_TABLE_SIZE; i++) {
-        if (bdev->gid_table[i].valid) {
-            len += scnprintf(buf + len, PAGE_SIZE - len, 
-                           "%pI6\n", bdev->gid_table[i].gid.raw);
-        }
-    }
-    
-    spin_unlock(&bdev->gid_lock);
-    
-    return len;
+	struct bluerdma_dev *bdev =
+		to_bdev(container_of(dev, struct ib_device, dev));
+	ssize_t len = 0;
+	int i;
+
+	spin_lock(&bdev->gid_lock);
+
+	for (i = 0; i < BLUERDMA_GID_TABLE_SIZE; i++) {
+		if (bdev->gid_table[i].valid) {
+			len += scnprintf(buf + len, PAGE_SIZE - len, "%pI6\n",
+					 bdev->gid_table[i].gid.raw);
+		}
+	}
+
+	spin_unlock(&bdev->gid_lock);
+
+	return len;
 }
 
 // Show function for MAC address
-ssize_t bluerdma_show_mac(struct device *dev, 
-                         struct device_attribute *attr,
-                         char *buf)
+ssize_t bluerdma_show_mac(struct device *dev, struct device_attribute *attr,
+			  char *buf)
 {
-    struct bluerdma_dev *bdev = to_bdev(container_of(dev, struct ib_device, dev));
-    ssize_t len;
-    
-    if (bdev->netdev) {
-        // For netdev, we can use the dev_addr directly
-        len = scnprintf(buf, PAGE_SIZE, "%pM\n", bdev->netdev->dev_addr);
-    } else {
-        // When using the stored MAC address, protect with lock
-        spin_lock(&bdev->mac_lock);
-        len = scnprintf(buf, PAGE_SIZE, "%pM\n", bdev->mac_addr);
-        spin_unlock(&bdev->mac_lock);
-    }
-    
-    return len;
+	struct bluerdma_dev *bdev =
+		to_bdev(container_of(dev, struct ib_device, dev));
+	ssize_t len;
+
+	if (bdev->netdev) {
+		// For netdev, we can use the dev_addr directly
+		len = scnprintf(buf, PAGE_SIZE, "%pM\n",
+				bdev->netdev->dev_addr);
+	} else {
+		// When using the stored MAC address, protect with lock
+		spin_lock(&bdev->mac_lock);
+		len = scnprintf(buf, PAGE_SIZE, "%pM\n", bdev->mac_addr);
+		spin_unlock(&bdev->mac_lock);
+	}
+
+	return len;
 }
 
 // Initialize sysfs attributes
 void bluerdma_init_sysfs_attrs(struct bluerdma_dev *dev)
 {
-    // Initialize GIDs attribute
-    sysfs_attr_init(&dev->gids_attr.attr);
-    dev->gids_attr.attr.name = "gids";
-    dev->gids_attr.attr.mode = 0444; // read-only
-    dev->gids_attr.show = bluerdma_show_gids;
-    dev->gids_attr.store = NULL;
-    
-    // Initialize MAC attribute
-    sysfs_attr_init(&dev->mac_attr.attr);
-    dev->mac_attr.attr.name = "mac";
-    dev->mac_attr.attr.mode = 0444; // read-only
-    dev->mac_attr.show = bluerdma_show_mac;
-    dev->mac_attr.store = NULL;
+	// Initialize GIDs attribute
+	sysfs_attr_init(&dev->gids_attr.attr);
+	dev->gids_attr.attr.name = "gids";
+	dev->gids_attr.attr.mode = 0444; // read-only
+	dev->gids_attr.show = bluerdma_show_gids;
+	dev->gids_attr.store = NULL;
+
+	// Initialize MAC attribute
+	sysfs_attr_init(&dev->mac_attr.attr);
+	dev->mac_attr.attr.name = "mac";
+	dev->mac_attr.attr.mode = 0444; // read-only
+	dev->mac_attr.show = bluerdma_show_mac;
+	dev->mac_attr.store = NULL;
 }

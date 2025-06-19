@@ -35,15 +35,16 @@ int bluerdma_query_port(struct ib_device *ibdev, u32 port_num,
 	if (!ndev)
 		goto out;
 
-	ib_get_eth_speed(ibdev, port_num, &attr->active_speed, &attr->active_width);
+	ib_get_eth_speed(ibdev, port_num, &attr->active_speed,
+			 &attr->active_width);
 	attr->max_mtu = ib_mtu_int_to_enum(ndev->mtu);
 	attr->active_mtu = ib_mtu_int_to_enum(ndev->mtu);
-	
+
 	if (netif_running(ndev) && netif_carrier_ok(ndev))
 		dev->state = IB_PORT_ACTIVE;
 	else
 		dev->state = IB_PORT_DOWN;
-	
+
 	attr->state = dev->state;
 
 out:
@@ -170,7 +171,8 @@ int bluerdma_get_port_immutable(struct ib_device *ibdev, u32 port_num,
 	if (err)
 		goto err_out;
 
-	immutable->core_cap_flags = RDMA_CORE_CAP_PROT_ROCE | RDMA_CORE_CAP_PROT_ROCE_UDP_ENCAP;
+	immutable->core_cap_flags = RDMA_CORE_CAP_PROT_ROCE |
+				    RDMA_CORE_CAP_PROT_ROCE_UDP_ENCAP;
 	immutable->pkey_tbl_len = 1;
 	immutable->gid_tbl_len = BLUERDMA_GID_TABLE_SIZE;
 
@@ -205,29 +207,30 @@ int bluerdma_query_gid(struct ib_device *ibdev, u32 port_num, int index,
 {
 	struct bluerdma_dev *dev = to_bdev(ibdev);
 	int ret = 0;
-	
+
 	if (port_num != 1) {
 		pr_err("bluerdma_query_gid: invalid port %u\n", port_num);
 		return -EINVAL;
 	}
-	
+
 	if (index < 0 || index >= BLUERDMA_GID_TABLE_SIZE) {
 		pr_err("bluerdma_query_gid: invalid index %d\n", index);
 		return -EINVAL;
 	}
-	
+
 	spin_lock(&dev->gid_lock);
-	
+
 	if (!dev->gid_table[index].valid) {
-		pr_debug("bluerdma_query_gid: no valid GID at index %d\n", index);
+		pr_debug("bluerdma_query_gid: no valid GID at index %d\n",
+			 index);
 		ret = -EAGAIN;
 		goto out;
 	}
-	
+
 	memcpy(gid->raw, dev->gid_table[index].gid.raw, 16);
-	pr_debug("bluerdma_query_gid: device %d, index %d, GID %pI6\n", 
-		 dev->id, index, gid->raw);
-	
+	pr_debug("bluerdma_query_gid: device %d, index %d, GID %pI6\n", dev->id,
+		 index, gid->raw);
+
 out:
 	spin_unlock(&dev->gid_lock);
 	return ret;
@@ -237,32 +240,34 @@ int bluerdma_add_gid(const struct ib_gid_attr *attr, void **context)
 {
 	struct bluerdma_dev *dev = to_bdev(attr->device);
 	int ret = 0;
-	
-	pr_info("bluerdma_add_gid: device %d, port %u, index %u\n", 
-		dev->id, attr->port_num, attr->index);
-	
+
+	pr_info("bluerdma_add_gid: device %d, port %u, index %u\n", dev->id,
+		attr->port_num, attr->index);
+
 	if (attr->port_num != 1) {
 		pr_err("bluerdma_add_gid: invalid port %u\n", attr->port_num);
 		return -EINVAL;
 	}
-	
+
 	if (attr->index < 0 || attr->index >= BLUERDMA_GID_TABLE_SIZE) {
 		pr_err("bluerdma_add_gid: invalid index %u\n", attr->index);
 		return -EINVAL;
 	}
-	
+
 	spin_lock(&dev->gid_lock);
-	
+
 	/* Store the GID in our table */
-	memcpy(&dev->gid_table[attr->index].gid, &attr->gid, sizeof(union ib_gid));
-	memcpy(&dev->gid_table[attr->index].attr, attr, sizeof(struct ib_gid_attr));
+	memcpy(&dev->gid_table[attr->index].gid, &attr->gid,
+	       sizeof(union ib_gid));
+	memcpy(&dev->gid_table[attr->index].attr, attr,
+	       sizeof(struct ib_gid_attr));
 	dev->gid_table[attr->index].valid = true;
-	
-	pr_debug("bluerdma_add_gid: added GID %pI6 at index %u\n", 
+
+	pr_debug("bluerdma_add_gid: added GID %pI6 at index %u\n",
 		 attr->gid.raw, attr->index);
-	
+
 	/* In a real driver, we would program the GID to hardware here */
-	
+
 	spin_unlock(&dev->gid_lock);
 	return ret;
 }
@@ -271,27 +276,27 @@ int bluerdma_del_gid(const struct ib_gid_attr *attr, void **context)
 {
 	struct bluerdma_dev *dev = to_bdev(attr->device);
 	int ret = 0;
-	
-	pr_info("bluerdma_del_gid: device %d, port %u, index %u\n", 
-		dev->id, attr->port_num, attr->index);
-	
+
+	pr_info("bluerdma_del_gid: device %d, port %u, index %u\n", dev->id,
+		attr->port_num, attr->index);
+
 	if (attr->port_num != 1) {
 		pr_err("bluerdma_del_gid: invalid port %u\n", attr->port_num);
 		return -EINVAL;
 	}
-	
+
 	if (attr->index < 0 || attr->index >= BLUERDMA_GID_TABLE_SIZE) {
 		pr_err("bluerdma_del_gid: invalid index %u\n", attr->index);
 		return -EINVAL;
 	}
-	
+
 	spin_lock(&dev->gid_lock);
-	
+
 	/* Mark the GID as invalid in our table */
 	dev->gid_table[attr->index].valid = false;
-	
+
 	/* In a real driver, we would remove the GID from hardware here */
-	
+
 	spin_unlock(&dev->gid_lock);
 	return ret;
 }
