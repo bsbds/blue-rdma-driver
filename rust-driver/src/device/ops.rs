@@ -114,7 +114,8 @@ where
         let abort = AbortSignal::new();
         let rx_buffer = rb_allocator.alloc()?;
         let rx_buffer_pa = rx_buffer.phys_addr;
-        let qp_attr_table = QpTableShared::new();
+        let qp_attr_table =
+            QpTableShared::new_with(|| QpAttr::new_with_ip(net_config.ip.ip().to_bits()));
         let qp_manager = QpManager::new();
         let cq_manager = CqManager::new();
         let cq_table = CompletionQueueTable::new();

@@ -30,6 +30,15 @@ pub(crate) struct QpAttr {
     pub(crate) recv_cq: Option<u32>,
 }
 
+impl QpAttr {
+    pub(crate) fn new_with_ip(ip: u32) -> Self {
+        Self {
+            ip,
+            ..Default::default()
+        }
+    }
+}
+
 /// Manages QPs
 pub(crate) struct QpManager {
     /// Bitmap tracking allocated QPNs
