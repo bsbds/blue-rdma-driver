@@ -10,12 +10,7 @@ use crate::{
 
 use crate::{
     cmd::CommandConfigurator,
-    device::{
-        ffi::EmulatedHwDevice,
-        hardware::{DmaEngineConfigurator, PciHwDevice},
-        ops::HwDevice,
-        DeviceAdaptor,
-    },
+    device::{ffi::EmulatedHwDevice, hardware::PciHwDevice, ops::HwDevice, DeviceAdaptor},
 };
 static HEAP_ALLOCATOR: sim_alloc::Simalloc = sim_alloc::Simalloc::new();
 
@@ -36,7 +31,6 @@ impl TestDevice {
     pub fn init() -> io::Result<Self> {
         let device = PciHwDevice::open_default().unwrap();
         device.reset().unwrap();
-        device.init_dma_engine().unwrap();
         let adaptor = device.new_adaptor().unwrap();
         let mut allocator = device.new_dma_buf_allocator().unwrap();
         let mut rb_allocator = DescRingBufAllocator::new(allocator);
