@@ -73,8 +73,6 @@ static int bluerdma_netdev_change_mtu(struct net_device *netdev, int new_mtu)
 
 static int bluerdma_napi_poll(struct napi_struct *napi, int budget)
 {
-	struct bluerdma_dev *dev =
-		container_of(napi, struct bluerdma_dev, napi);
 	int work_done = 0;
 
 	/* TODO: process received packets */
