@@ -5,7 +5,8 @@ obj-m := bluerdma.o
 
 bluerdma-y := \
 	main.o \
-	verbs.o
+	verbs.o \
+	ethernet.o
 
 test: bluerdma.ko
 	sudo /usr/src/linux-headers-$(shell uname -r)/scripts/sign-file sha256 /var/lib/shim-signed/mok/MOK.priv /var/lib/shim-signed/mok/MOK.der $^
