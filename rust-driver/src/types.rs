@@ -7,9 +7,8 @@ use ibverbs_sys::{
     },
 };
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
-use crate::send::WorkReqOpCode;
+use crate::{send::WorkReqOpCode, RdmaError};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SendWr {
@@ -20,10 +19,13 @@ pub(crate) enum SendWr {
 impl SendWr {
     #[allow(unsafe_code)]
     /// Creates a new `SendWr`
-    pub(crate) fn new(wr: ibv_send_wr) -> Result<Self, ValidationError> {
-        let num_sge = usize::try_from(wr.num_sge).map_err(ValidationError::invalid_input)?;
+    pub(crate) fn new(wr: ibv_send_wr) -> crate::error::Result<Self> {
+        let num_sge = usize::try_from(wr.num_sge)
+            .map_err(|e| RdmaError::InvalidInput(format!("Invalid SGE count: {e}")))?;
         if num_sge != 1 {
-            return Err(ValidationError::unimplemented("only support single sge"));
+            return Err(RdmaError::Unimplemented(
+                "Only support for single SGE".into(),
+            ));
         }
         // SAFETY: sg_list is valid when num_sge > 0, which we've verified above
         let sge = unsafe { *wr.sg_list };
@@ -33,7 +35,12 @@ impl SendWr {
             IBV_WR_RDMA_READ => WorkReqOpCode::RdmaRead,
             IBV_WR_SEND => WorkReqOpCode::Send,
             IBV_WR_SEND_WITH_IMM => WorkReqOpCode::SendWithImm,
-            _ => return Err(ValidationError::unimplemented("opcode not supported")),
+            _ => {
+                return Err(RdmaError::Unimplemented(format!(
+                    "Opcode {} not supported",
+                    wr.opcode
+                )))
+            }
         };
 
         let base = SendWrBase {
@@ -58,7 +65,7 @@ impl SendWr {
                 Ok(Self::Rdma(wr))
             }
             IBV_WR_SEND | IBV_WR_SEND_WITH_IMM => Ok(Self::Send(base)),
-            _ => Err(ValidationError::unimplemented("opcode not supported")),
+            _ => Err(RdmaError::Unimplemented("opcode not supported".into())),
         }
     }
 
@@ -138,16 +145,24 @@ impl SendWrRdma {
     #[allow(unsafe_code)]
     /// Creates a new resolver from the given work request.
     /// Returns None if the input is invalid
-    pub(crate) fn new(wr: ibv_send_wr) -> Result<Self, ValidationError> {
+    pub(crate) fn new(wr: ibv_send_wr) -> crate::error::Result<Self> {
         match wr.opcode {
             IBV_WR_RDMA_WRITE | IBV_WR_RDMA_WRITE_WITH_IMM => {}
-            _ => return Err(ValidationError::unimplemented("opcode not supported")),
+            _ => {
+                return Err(RdmaError::Unimplemented(format!(
+                    "Opcode {} not supported for RDMA operations",
+                    wr.opcode
+                )))
+            }
         }
 
-        let num_sge = usize::try_from(wr.num_sge).map_err(ValidationError::invalid_input)?;
+        let num_sge = usize::try_from(wr.num_sge)
+            .map_err(|e| RdmaError::InvalidInput(format!("Invalid SGE count: {e}")))?;
 
         if num_sge != 1 {
-            return Err(ValidationError::unimplemented("only support single sge"));
+            return Err(RdmaError::Unimplemented(
+                "Only support for single SGE in RDMA operations".into(),
+            ));
         }
 
         // SAFETY: sg_list is valid when num_sge > 0, which we've verified above
@@ -159,7 +174,7 @@ impl SendWrRdma {
             IBV_WR_RDMA_READ => WorkReqOpCode::RdmaRead,
             IBV_WR_SEND => WorkReqOpCode::Send,
             IBV_WR_SEND_WITH_IMM => WorkReqOpCode::SendWithImm,
-            _ => return Err(ValidationError::unimplemented("opcode not supported")),
+            _ => return Err(RdmaError::Unimplemented("opcode not supported".into())),
         };
 
         Ok(Self {
@@ -283,30 +298,7 @@ impl SendWrBase {
     }
 }
 
-/// Error type for invalid input validation
-#[derive(Error, Debug)]
-pub(crate) enum ValidationError {
-    /// The user input is invalid
-    #[error("invalid input: {0}")]
-    InvalidInput(String),
-    /// The operation is unimplemented
-    #[error("unimplemented: {0}")]
-    Unimplemented(String),
-}
-
-impl ValidationError {
-    /// `ValidationError::InvalidInput` error
-    #[allow(clippy::needless_pass_by_value)] // consume the error
-    pub(crate) fn invalid_input<T: ToString>(value: T) -> Self {
-        Self::InvalidInput(value.to_string())
-    }
-
-    /// `ValidationError::Unimplemented` error
-    #[allow(clippy::needless_pass_by_value)] // consume the error
-    pub(crate) fn unimplemented<T: ToString>(value: T) -> Self {
-        Self::Unimplemented(value.to_string())
-    }
-}
+// ValidationError has been moved to the error module
 
 #[allow(clippy::unsafe_derive_deserialize)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Encode, Decode)]

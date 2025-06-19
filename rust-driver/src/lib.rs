@@ -174,6 +174,8 @@ mod config;
 mod constants;
 mod descriptors;
 mod device;
+/// Error types and handling
+mod error;
 mod fragmenter;
 /// Memory operation components
 #[allow(unsafe_code)]
@@ -184,6 +186,7 @@ mod mtt;
 #[allow(unused)]
 /// Network implementations
 pub mod net;
+mod pd;
 mod qp;
 mod rdma_worker;
 mod recv;
@@ -197,5 +200,6 @@ mod types;
 mod utils;
 
 pub use device::ffi::{BlueRdmaCore, RdmaCtxOps};
+pub use error::{RdmaError, Result};
 pub use simple_nic::SimpleNicDeviceConfig;
 pub mod test_wrapper;

@@ -22,6 +22,11 @@ use std::{
     time::Duration,
 };
 
+use crate::{
+    error::{RdmaError, Result},
+    pd::PdTable,
+};
+
 use bincode::{Decode, Encode};
 use bitvec::store::BitStore;
 use log::{debug, error, info, warn};
@@ -80,6 +85,10 @@ impl DmaBufAllocator for MockDmaBufAllocator {
             )
         };
 
+        if ptr == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+
         let mmap = MmapMut::new(ptr, usize::MAX);
         Ok(DmaBuf::new(mmap, 0))
     }
@@ -116,11 +125,11 @@ impl HwDevice for MockHwDevice {
 
     type UmemHandler = MockUmemHandler;
 
-    fn new_adaptor(&self) -> io::Result<Self::Adaptor> {
+    fn new_adaptor(&self) -> crate::error::Result<Self::Adaptor> {
         Ok(MockDeviceAdaptor)
     }
 
-    fn new_dma_buf_allocator(&self) -> io::Result<Self::DmaBufAllocator> {
+    fn new_dma_buf_allocator(&self) -> crate::error::Result<Self::DmaBufAllocator> {
         Ok(MockDmaBufAllocator)
     }
 
@@ -156,6 +165,7 @@ pub(crate) struct MockDeviceCtx {
     qp_local_task_tx: Option<flume::Sender<LocalTask>>,
     qpn_set: HashSet<u32>,
     mr_table: MrTable,
+    pd_table: PdTable,
 }
 
 impl MockDeviceCtx {
@@ -170,23 +180,36 @@ impl MockDeviceCtx {
 }
 
 impl DeviceOps for MockDeviceCtx {
-    fn reg_mr(&mut self, addr: u64, length: usize, pd_handle: u32, access: u8) -> io::Result<u32> {
+    fn reg_mr(
+        &mut self,
+        addr: u64,
+        length: usize,
+        pd_handle: u32,
+        access: u8,
+    ) -> crate::error::Result<u32> {
         let addr_resolver = PhysAddrResolverLinuxX86;
-        let pa = addr_resolver.virt_to_phys(addr);
+        let pa = addr_resolver.virt_to_phys(addr).map_err(|e| {
+            RdmaError::MemoryError(format!("Failed to resolve physical address: {e}",))
+        })?;
+
         info!("mock reg mr, virt addr: {addr:x}, length: {length}, access: {access}, phys_addr: {pa:?}");
-        if pa.ok().flatten().is_some() {
+
+        if pa.is_some() {
             self.mr_table.reg(Mr::new(addr, length));
+        } else {
+            return Err(RdmaError::MemoryError("Physical address not found".into()));
         }
+
         self.mr_key += 1;
         Ok(self.mr_key)
     }
 
-    fn dereg_mr(&mut self, mr_key: u32) -> io::Result<()> {
+    fn dereg_mr(&mut self, mr_key: u32) -> crate::error::Result<()> {
         info!("mock dereg mr");
         Ok(())
     }
 
-    fn create_qp(&mut self, attr: IbvQpInitAttr) -> io::Result<u32> {
+    fn create_qp(&mut self, attr: IbvQpInitAttr) -> crate::error::Result<u32> {
         let qpn = self.rand_qpn();
         if let Some(h) = attr.send_cq() {
             info!("set send cq: {h} for qp: {qpn}");
@@ -262,7 +285,14 @@ impl DeviceOps for MockDeviceCtx {
                     imm,
                     ack_req,
                 }) => {
-                    let req = recv_reqs.pop_front().unwrap();
+                    let req = recv_reqs
+                        .pop_front()
+                        .ok_or_else(|| {
+                            log::error!("No receive request available for QPN {qpn}");
+                            RdmaError::QpError("No receive request available".into())
+                        })
+                        .expect("No receive request available");
+
                     write_local_addr(&mr_table, req.wr.addr, &data);
                     if let Some(x) = recv_cq.as_ref() {
                         let completion = Completion::Recv { wr_id, imm };
@@ -334,11 +364,12 @@ impl DeviceOps for MockDeviceCtx {
         Ok(qpn)
     }
 
-    fn update_qp(&mut self, qpn: u32, attr: IbvQpAttr) -> io::Result<()> {
+    fn update_qp(&mut self, qpn: u32, attr: IbvQpAttr) -> crate::error::Result<()> {
         // FIXME: use actual addr
         let dqp_ip = attr.dest_qp_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
         let dqpn = attr.dest_qp_num();
-        _ = self.qp_ctx_table.map_qp_mut(qpn, |ctx| {
+
+        let result = self.qp_ctx_table.map_qp_mut(qpn, |ctx| {
             if dqpn.is_some() {
                 ctx.dpqn = dqpn;
             }
@@ -349,12 +380,16 @@ impl DeviceOps for MockDeviceCtx {
             }
         });
 
+        if result.is_none() {
+            return Err(RdmaError::QpError(format!("QP {qpn} not found",)));
+        }
+
         info!("mock update qp: {qpn}, peer qp: {dqpn:?}");
 
         Ok(())
     }
 
-    fn destroy_qp(&mut self, qpn: u32) {
+    fn destroy_qp(&mut self, qpn: u32) -> crate::error::Result<()> {
         info!("destroying qp: {qpn}");
         _ = self.qp_ctx_table.map_qp_mut(qpn, move |ctx| {
             ctx.abort_signal
@@ -364,17 +399,21 @@ impl DeviceOps for MockDeviceCtx {
             ctx.handle.take().unwrap().join().unwrap();
         });
         info!("qp: {qpn} destroyed");
+
+        Ok(())
     }
 
-    fn create_cq(&mut self) -> Option<u32> {
+    fn create_cq(&mut self) -> crate::error::Result<u32> {
         self.cq_handle += 1;
         let _ignore = self.cq_table.insert(self.cq_handle, CompletionQueue::new());
         info!("mock create cq, handle: {}", self.cq_handle);
-        Some(self.cq_handle)
+        Ok(self.cq_handle)
     }
 
-    fn destroy_cq(&mut self, handle: u32) {
+    fn destroy_cq(&mut self, handle: u32) -> crate::error::Result<()> {
         info!("mock destroy cq, handle: {handle}");
+
+        Ok(())
     }
 
     fn poll_cq(&mut self, handle: u32, max_num_entries: usize) -> Vec<Completion> {
@@ -393,7 +432,7 @@ impl DeviceOps for MockDeviceCtx {
         completions
     }
 
-    fn post_send(&mut self, qpn: u32, wr: SendWr) -> io::Result<()> {
+    fn post_send(&mut self, qpn: u32, wr: SendWr) -> crate::error::Result<()> {
         let ack_req = wr.send_flags() & ibverbs_sys::ibv_send_flags::IBV_SEND_SIGNALED.0 != 0;
         let to_send = match wr {
             SendWr::Rdma(x) => match x.opcode() {
@@ -424,7 +463,12 @@ impl DeviceOps for MockDeviceCtx {
                     laddr: x.laddr(),
                     len: x.length(),
                 }),
-                _ => unreachable!(),
+                _ => {
+                    return Err(RdmaError::Unimplemented(format!(
+                        "Unsupported opcode: {:?}",
+                        x.opcode()
+                    )))
+                }
             },
             SendWr::Send(x) => {
                 let data = read_local_addr(x.laddr, x.length as usize);
@@ -436,24 +480,46 @@ impl DeviceOps for MockDeviceCtx {
                 })
             }
         };
-        _ = self
+
+        let result = self
             .qp_ctx_table
             .map_qp_mut(qpn, |ctx| ctx.conn().send(to_send));
+
+        if result.is_none() {
+            return Err(RdmaError::QpError(format!("QP {qpn} not found",)));
+        }
 
         info!("post send wr: {wr:?}, qpn: {qpn}");
 
         Ok(())
     }
 
-    fn post_recv(&mut self, qpn: u32, wr: RecvWr) -> io::Result<()> {
-        self.qp_local_task_tx
-            .as_ref()
-            .unwrap()
-            .send(LocalTask::PostRecv(PostRecvReq { wr }));
+    fn post_recv(&mut self, qpn: u32, wr: RecvWr) -> crate::error::Result<()> {
+        if let Some(tx) = self.qp_local_task_tx.as_ref() {
+            tx.send(LocalTask::PostRecv(PostRecvReq { wr }))
+                .map_err(|e| RdmaError::QpError(format!("Failed to post receive request: {e}",)))?;
 
-        info!("post recv wr: {wr:?}, qpn: {qpn}");
+            info!("post recv wr: {wr:?}, qpn: {qpn}");
+            Ok(())
+        } else {
+            Err(RdmaError::QpError("Task channel not initialized".into()))
+        }
+    }
 
-        Ok(())
+    fn alloc_pd(&mut self) -> crate::error::Result<u32> {
+        self.pd_table
+            .alloc()
+            .ok_or(RdmaError::ResourceExhausted("No PD available".into()))
+    }
+
+    fn dealloc_pd(&mut self, handle: u32) -> crate::error::Result<()> {
+        if self.pd_table.dealloc(handle) {
+            Ok(())
+        } else {
+            Err(RdmaError::InvalidInput(format!(
+                "PD handle {handle} not present"
+            )))
+        }
     }
 }
 

@@ -66,12 +66,12 @@ impl QpManager {
     }
 
     /// Removes and returns the QP associated with the given QPN
-    pub(crate) fn destroy_qp(&mut self, qpn: u32) {
+    pub(crate) fn destroy_qp(&mut self, qpn: u32) -> bool {
         let index = index(qpn);
-        if index >= MAX_QP_CNT {
-            return;
-        }
+        let ret = self.bitmap.get(index).is_some_and(|x| *x);
         self.bitmap.set(index, false);
+
+        ret
     }
 }
 

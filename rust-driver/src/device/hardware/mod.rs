@@ -177,12 +177,12 @@ impl HwDevice for PciHwDevice {
 
     type UmemHandler = HostUmemHandler;
 
-    fn new_adaptor(&self) -> io::Result<Self::Adaptor> {
-        SysfsPciCsrAdaptor::new(&self.sysfs_path)
+    fn new_adaptor(&self) -> crate::error::Result<Self::Adaptor> {
+        SysfsPciCsrAdaptor::new(&self.sysfs_path).map_err(Into::into)
     }
 
-    fn new_dma_buf_allocator(&self) -> io::Result<Self::DmaBufAllocator> {
-        UDmaBufAllocator::open()
+    fn new_dma_buf_allocator(&self) -> crate::error::Result<Self::DmaBufAllocator> {
+        UDmaBufAllocator::open().map_err(Into::into)
     }
 
     fn new_umem_handler(&self) -> Self::UmemHandler {

@@ -5,7 +5,7 @@ use crate::{ack_timeout::AckTimeoutConfig, net::config::NetworkConfig};
 const DEFAULT_CONFIG_PATH: &str = "/etc/bluerdma/config.toml";
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ConfigError {
+pub enum ConfigError {
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
 

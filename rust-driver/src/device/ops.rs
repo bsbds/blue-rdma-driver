@@ -27,6 +27,7 @@ use crate::{
     meta_report,
     mtt::{Mtt, PgtEntry},
     net::{config::NetworkConfig, reader::NetConfigReader},
+    pd::PdTable,
     qp::{QpAttr, QpManager, QpTableShared},
     rdma_worker::{RdmaWriteTask, RdmaWriteWorker},
     recv::{
@@ -38,31 +39,36 @@ use crate::{
     simple_nic::SimpleNicController,
     spawner::{task_channel, AbortSignal, SingleThreadTaskWorker, TaskTx},
     types::{RecvWr, SendWr, SendWrBase, SendWrRdma},
+    RdmaError,
 };
 
 use super::{mode::Mode, DeviceAdaptor};
+
+use crate::error::Result;
 
 pub(crate) trait HwDevice {
     type Adaptor;
     type DmaBufAllocator;
     type UmemHandler;
 
-    fn new_adaptor(&self) -> io::Result<Self::Adaptor>;
-    fn new_dma_buf_allocator(&self) -> io::Result<Self::DmaBufAllocator>;
+    fn new_adaptor(&self) -> Result<Self::Adaptor>;
+    fn new_dma_buf_allocator(&self) -> Result<Self::DmaBufAllocator>;
     fn new_umem_handler(&self) -> Self::UmemHandler;
 }
 
 pub(crate) trait DeviceOps {
-    fn reg_mr(&mut self, addr: u64, length: usize, pd_handle: u32, access: u8) -> io::Result<u32>;
-    fn dereg_mr(&mut self, mr_key: u32) -> io::Result<()>;
-    fn create_qp(&mut self, attr: IbvQpInitAttr) -> io::Result<u32>;
-    fn update_qp(&mut self, qpn: u32, attr: IbvQpAttr) -> io::Result<()>;
-    fn destroy_qp(&mut self, qpn: u32);
-    fn create_cq(&mut self) -> Option<u32>;
-    fn destroy_cq(&mut self, handle: u32);
+    fn reg_mr(&mut self, addr: u64, length: usize, pd_handle: u32, access: u8) -> Result<u32>;
+    fn dereg_mr(&mut self, mr_key: u32) -> Result<()>;
+    fn create_qp(&mut self, attr: IbvQpInitAttr) -> Result<u32>;
+    fn update_qp(&mut self, qpn: u32, attr: IbvQpAttr) -> Result<()>;
+    fn destroy_qp(&mut self, qpn: u32) -> Result<()>;
+    fn create_cq(&mut self) -> Result<u32>;
+    fn destroy_cq(&mut self, handle: u32) -> Result<()>;
     fn poll_cq(&mut self, handle: u32, max_num_entries: usize) -> Vec<Completion>;
-    fn post_send(&mut self, qpn: u32, wr: SendWr) -> io::Result<()>;
-    fn post_recv(&mut self, qpn: u32, wr: RecvWr) -> io::Result<()>;
+    fn post_send(&mut self, qpn: u32, wr: SendWr) -> Result<()>;
+    fn post_recv(&mut self, qpn: u32, wr: RecvWr) -> Result<()>;
+    fn alloc_pd(&mut self) -> Result<u32>;
+    fn dealloc_pd(&mut self, handle: u32) -> Result<()>;
 }
 
 pub(crate) struct HwDeviceCtx<H: HwDevice> {
@@ -80,6 +86,7 @@ pub(crate) struct HwDeviceCtx<H: HwDevice> {
     completion_tx: TaskTx<CompletionTask>,
     config: DeviceConfig,
     allocator: H::DmaBufAllocator,
+    pd_table: PdTable,
 }
 
 #[allow(private_bounds)]
@@ -90,7 +97,7 @@ where
     H::DmaBufAllocator: DmaBufAllocator,
     H::UmemHandler: UmemHandler,
 {
-    pub(crate) fn initialize(device: H, config: DeviceConfig) -> io::Result<Self> {
+    pub(crate) fn initialize(device: H, config: DeviceConfig) -> Result<Self> {
         let mode = Mode::default();
         let net_config = NetConfigReader::read();
         let adaptor = device.new_adaptor()?;
@@ -100,10 +107,10 @@ where
             CommandConfigurator::init_v2(&adaptor, rb_allocator.alloc()?, rb_allocator.alloc()?)?;
         let send_bufs = iter::repeat_with(|| rb_allocator.alloc())
             .take(mode.num_channel())
-            .collect::<Result<_, _>>()?;
+            .collect::<std::result::Result<_, _>>()?;
         let meta_bufs = iter::repeat_with(|| rb_allocator.alloc())
             .take(mode.num_channel())
-            .collect::<Result<_, _>>()?;
+            .collect::<std::result::Result<_, _>>()?;
 
         let (rdma_write_tx, rdma_write_rx) = task_channel();
         let (completion_tx, completion_rx) = task_channel();
@@ -192,38 +199,39 @@ where
             completion_tx,
             config,
             allocator,
+            pd_table: PdTable::new(),
         })
     }
 }
 
 impl<H: HwDevice> HwDeviceCtx<H> {
-    fn send(&self, qpn: u32, mut wr: SendWrBase) -> io::Result<()> {
+    fn send(&self, qpn: u32, mut wr: SendWrBase) -> Result<()> {
         match self.recv_wr_queue_table.pop(qpn) {
             Some(x) => {
                 if wr.length != x.length {
-                    return Err(io::Error::from(io::ErrorKind::InvalidInput));
+                    return Err(RdmaError::InvalidInput(
+                        "Send length does not match receive length".into(),
+                    ));
                 }
                 let wr = SendWrRdma::new_from_base(wr, x.addr, x.lkey);
-                self.rdma_write(qpn, wr)
+                self.rdma_write(qpn, wr);
+
+                Ok(())
             }
             None => todo!("return rnr error"),
         }
     }
 
-    fn rdma_read(&self, qpn: u32, wr: SendWrRdma) -> io::Result<()> {
+    fn rdma_read(&self, qpn: u32, wr: SendWrRdma) {
         let (task, result_rx) = RdmaWriteTask::new_write(qpn, wr);
         self.rdma_write_tx.send(task);
-        result_rx
-            .recv()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+        result_rx.recv().expect("failed to receive result");
     }
 
-    fn rdma_write(&self, qpn: u32, wr: SendWrRdma) -> io::Result<()> {
+    fn rdma_write(&self, qpn: u32, wr: SendWrRdma) {
         let (task, result_rx) = RdmaWriteTask::new_write(qpn, wr);
         self.rdma_write_tx.send(task);
-        result_rx
-            .recv()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+        result_rx.recv().expect("failed to receive result");
     }
 }
 
@@ -233,7 +241,7 @@ where
     H::Adaptor: DeviceAdaptor + Send + 'static,
     H::UmemHandler: UmemHandler,
 {
-    fn reg_mr(&mut self, addr: u64, length: usize, pd_handle: u32, access: u8) -> io::Result<u32> {
+    fn reg_mr(&mut self, addr: u64, length: usize, pd_handle: u32, access: u8) -> Result<u32> {
         fn chunks(entry: PgtEntry) -> Vec<PgtEntry> {
             /// Maximum number of Page Table entries (PGT entries) that can be allocated in a single `PCIe` transaction.
             /// A `PCIe` transaction size is 128 bytes, and each PGT entry is a u64 (8 bytes).
@@ -255,16 +263,13 @@ where
         umem_handler.pin_pages(addr, length)?;
         let num_pages = get_num_page(addr, length);
         let (mr_key, pgt_entry) = self.mtt.register(num_pages)?;
-        let length_u32 =
-            u32::try_from(length).map_err(|_err| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let length_u32 = u32::try_from(length)
+            .map_err(|_err| RdmaError::InvalidInput("Length too large".into()))?;
         let mut phys_addrs = umem_handler
             .virt_to_phys_range(addr, num_pages)?
             .into_iter()
             .collect::<Option<Vec<_>>>()
-            .ok_or(io::Error::new(
-                io::ErrorKind::NotFound,
-                "physical address not found",
-            ))?
+            .ok_or(RdmaError::MemoryError("Physical address not found".into()))?
             .into_iter();
         let buf = &mut self.mtt_buffer.buf;
         let base_index = pgt_entry.index;
@@ -285,15 +290,17 @@ where
         Ok(mr_key)
     }
 
-    fn dereg_mr(&mut self, mr_key: u32) -> io::Result<()> {
+    fn dereg_mr(&mut self, mr_key: u32) -> Result<()> {
         self.mtt.deregister(mr_key)
     }
 
-    fn create_qp(&mut self, attr: IbvQpInitAttr) -> io::Result<u32> {
+    fn create_qp(&mut self, attr: IbvQpInitAttr) -> Result<u32> {
         let qpn = self
             .qp_manager
             .create_qp()
-            .ok_or(io::Error::from(io::ErrorKind::WouldBlock))?;
+            .ok_or(RdmaError::ResourceExhausted(
+                "No QP numbers available".into(),
+            ))?;
         let _ignore = self.qp_attr_table.map_qp_mut(qpn, |current| {
             current.qpn = qpn;
             current.qp_type = attr.qp_type();
@@ -315,7 +322,7 @@ where
         Ok(qpn)
     }
 
-    fn update_qp(&mut self, qpn: u32, attr: IbvQpAttr) -> io::Result<()> {
+    fn update_qp(&mut self, qpn: u32, attr: IbvQpAttr) -> Result<()> {
         let entry = self
             .qp_attr_table
             .map_qp_mut(qpn, |current| {
@@ -340,44 +347,61 @@ where
                 current.dqp_ip = ip_addr;
                 entry
             })
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or(RdmaError::NotFound(format!("QP {qpn} not found",)))?;
 
         self.cmd_controller.update_qp(entry);
 
         let qp = self
             .qp_attr_table
             .get_qp(qpn)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or(RdmaError::NotFound(format!("QP {qpn} not found",)))?;
         if qp.dqpn != 0 && qp.dqp_ip != 0 && self.post_recv_tx_table.get_qp_mut(qpn).is_none() {
             let dqp_ip = Ipv4Addr::from_bits(qp.dqp_ip);
             let (tx, rx) =
                 post_recv_channel::<TcpChannel>(qp.ip.into(), qp.dqp_ip.into(), qpn, qp.dqpn)?;
             self.post_recv_tx_table.insert(qpn, tx);
-            let wr_queue = self
-                .recv_wr_queue_table
-                .clone_recv_wr_queue(qpn)
-                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            let wr_queue =
+                self.recv_wr_queue_table
+                    .clone_recv_wr_queue(qpn)
+                    .ok_or(RdmaError::NotFound(format!(
+                        "Receive WR queue for QP {qpn} not found",
+                    )))?;
             RecvWorker::new(rx, wr_queue).spawn();
         }
 
         Ok(())
     }
 
-    fn destroy_qp(&mut self, qpn: u32) {
-        self.qp_manager.destroy_qp(qpn);
+    fn destroy_qp(&mut self, qpn: u32) -> Result<()> {
+        if self.qp_manager.destroy_qp(qpn) {
+            Ok(())
+        } else {
+            Err(RdmaError::InvalidInput(format!("QPN {qpn} not present")))
+        }
     }
 
-    fn create_cq(&mut self) -> Option<u32> {
-        self.cq_manager.create_cq()
+    fn create_cq(&mut self) -> Result<u32> {
+        self.cq_manager
+            .create_cq()
+            .ok_or(RdmaError::ResourceExhausted("No CQ available".into()))
     }
 
-    fn destroy_cq(&mut self, handle: u32) {
-        self.cq_manager.destroy_cq(handle);
+    fn destroy_cq(&mut self, handle: u32) -> Result<()> {
+        if self.cq_manager.destroy_cq(handle) {
+            Ok(())
+        } else {
+            Err(RdmaError::InvalidInput(format!(
+                "CQ handle {handle} not present"
+            )))
+        }
     }
 
-    fn post_send(&mut self, qpn: u32, wr: SendWr) -> io::Result<()> {
+    fn post_send(&mut self, qpn: u32, wr: SendWr) -> Result<()> {
         match wr {
-            SendWr::Rdma(wr) => self.rdma_write(qpn, wr),
+            SendWr::Rdma(wr) => {
+                self.rdma_write(qpn, wr);
+                Ok(())
+            }
             SendWr::Send(wr) => self.send(qpn, wr),
         }
     }
@@ -393,21 +417,39 @@ where
             .collect()
     }
 
-    fn post_recv(&mut self, qpn: u32, wr: RecvWr) -> io::Result<()> {
+    fn post_recv(&mut self, qpn: u32, wr: RecvWr) -> Result<()> {
         let qp = self
             .qp_attr_table
             .get_qp(qpn)
-            .ok_or(io::Error::from(io::ErrorKind::InvalidInput))?;
+            .ok_or(RdmaError::QpError(format!("QP {qpn} not found",)))?;
         let event = Event::PostRecv(PostRecvEvent::new(qpn, wr.wr_id));
         self.completion_tx
             .send(CompletionTask::Register { qpn, event });
         let tx = self
             .post_recv_tx_table
             .get_qp_mut(qpn)
-            .ok_or(io::Error::from(io::ErrorKind::InvalidInput))?;
+            .ok_or(RdmaError::QpError(format!(
+                "Post receive channel for QP {qpn} not found",
+            )))?;
         tx.send(wr)?;
 
         Ok(())
+    }
+
+    fn alloc_pd(&mut self) -> Result<u32> {
+        self.pd_table
+            .alloc()
+            .ok_or(RdmaError::ResourceExhausted("No PD available".into()))
+    }
+
+    fn dealloc_pd(&mut self, handle: u32) -> Result<()> {
+        if self.pd_table.dealloc(handle) {
+            Ok(())
+        } else {
+            Err(RdmaError::InvalidInput(format!(
+                "PD handle {handle} not present"
+            )))
+        }
     }
 }
 

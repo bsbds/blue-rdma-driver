@@ -3,7 +3,10 @@ use std::{collections::HashMap, io, iter, mem::take};
 use bitvec::{array::BitArray, bitarr};
 use rand::Rng;
 
-use crate::mem::{get_num_page, page::ContiguousPages, virt_to_phy::AddressResolver, PAGE_SIZE};
+use crate::{
+    mem::{get_num_page, page::ContiguousPages, virt_to_phy::AddressResolver, PAGE_SIZE},
+    RdmaError,
+};
 
 const MAX_MR_CNT: usize = 8192;
 const LR_KEY_KEY_PART_WIDTH: u32 = 8;
@@ -43,16 +46,16 @@ impl Mtt {
     }
 
     /// Deregister a memory region
-    pub(crate) fn deregister(&mut self, mr_key: u32) -> io::Result<()> {
+    pub(crate) fn deregister(&mut self, mr_key: u32) -> crate::error::Result<()> {
         let entry = self
             .mrkey_map
             .remove(&mr_key)
-            .ok_or(io::Error::from(io::ErrorKind::InvalidInput))?;
+            .ok_or(RdmaError::InvalidInput("failed to remove mr key".into()))?;
         if !self
             .alloc
             .dealloc(mr_key, entry.index as usize, entry.count as usize)
         {
-            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+            return Err(RdmaError::InvalidInput("failed to dealloc mr key".into()));
         }
         Ok(())
     }

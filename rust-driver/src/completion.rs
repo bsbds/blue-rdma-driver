@@ -515,10 +515,10 @@ impl CqManager {
     }
 
     /// Removes and returns the cq associated with the given cqN
-    pub(crate) fn destroy_cq(&mut self, handle: u32) {
-        if handle as usize >= MAX_CQ_CNT {
-            return;
-        }
+    pub(crate) fn destroy_cq(&mut self, handle: u32) -> bool {
+        let ret = self.bitmap.get(handle as usize).is_some_and(|x| *x);
         self.bitmap.set(handle as usize, false);
+
+        ret
     }
 }

@@ -2,6 +2,7 @@ use std::ptr::NonNull;
 use std::{io, net::Ipv4Addr, ptr};
 
 use ipnetwork::{IpNetwork, Ipv4Network};
+use log::error;
 
 use crate::constants::TEST_CARD_IP_ADDRESS;
 use crate::{
@@ -26,10 +27,21 @@ use super::{
     },
 };
 
+use crate::error::Result;
+
 const POST_RECV_TCP_LOOP_BACK_SERVER_ADDRESS: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 const POST_RECV_TCP_LOOP_BACK_CLIENT_ADDRESS: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
 
 static HEAP_ALLOCATOR: sim_alloc::Simalloc = sim_alloc::Simalloc::new();
+
+macro_rules! deref_or_ret {
+    ($ptr:expr, $ret:expr) => {
+        match unsafe { $ptr.as_mut() } {
+            Some(val) => *val,
+            None => return $ret,
+        }
+    };
+}
 
 #[allow(unsafe_code)]
 /// RDMA context operations for Blue-RDMA driver.
@@ -130,7 +142,7 @@ impl BlueRdmaCore {
     }
 
     #[allow(clippy::unwrap_used, clippy::unwrap_in_result)]
-    fn new_hw(sysfs_name: &str) -> Result<HwDeviceCtx<PciHwDevice>, Box<dyn std::error::Error>> {
+    fn new_hw(sysfs_name: &str) -> Result<HwDeviceCtx<PciHwDevice>> {
         Self::init_logger();
         let config = ConfigLoader::load_default()?;
         let device = PciHwDevice::open_default()?;
@@ -142,7 +154,7 @@ impl BlueRdmaCore {
     }
 
     #[allow(clippy::unwrap_used, clippy::unwrap_in_result)]
-    fn new_emulated(sysfs_name: &str) -> io::Result<HwDeviceCtx<EmulatedHwDevice>> {
+    fn new_emulated(sysfs_name: &str) -> Result<HwDeviceCtx<EmulatedHwDevice>> {
         let device = match sysfs_name {
             "uverbs0" => {
                 sim_alloc::init_global_allocator(0, &HEAP_ALLOCATOR);
@@ -173,7 +185,7 @@ impl BlueRdmaCore {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    fn new_mock(sysfs_name: &str) -> io::Result<MockDeviceCtx> {
+    fn new_mock(sysfs_name: &str) -> Result<MockDeviceCtx> {
         Ok(MockDeviceCtx::default())
     }
 }
@@ -195,11 +207,11 @@ impl HwDevice for EmulatedHwDevice {
 
     type UmemHandler = EmulatedUmemHandler;
 
-    fn new_adaptor(&self) -> io::Result<Self::Adaptor> {
+    fn new_adaptor(&self) -> Result<Self::Adaptor> {
         Ok(EmulatedDevice::new_with_addr(&self.addr))
     }
 
-    fn new_dma_buf_allocator(&self) -> io::Result<Self::DmaBufAllocator> {
+    fn new_dma_buf_allocator(&self) -> Result<Self::DmaBufAllocator> {
         Ok(EmulatedPageAllocator::new(
             sim_alloc::page_start_addr()..sim_alloc::heap_start_addr(),
         ))
@@ -231,14 +243,20 @@ unsafe impl RdmaCtxOps for BlueRdmaCore {
         #[cfg(feature = "mock")]
         let ctx = BlueRdmaCore::new_mock(&name);
 
-        // TODO: properly handles errors
-        Box::into_raw(Box::new(ctx.expect("failed to create device context"))).cast()
+        match ctx {
+            Ok(x) => Box::into_raw(Box::new(x)).cast(),
+            Err(err) => {
+                error!("Failed to initialize hw context: {err}");
+                ptr::null_mut()
+            }
+        }
     }
 
     #[inline]
-    #[allow(clippy::as_conversions)] // provider implementation guarantees pointer validity
     fn free(driver_data: *const std::ffi::c_void) {
-        if !driver_data.is_null() {
+        if driver_data.is_null() {
+            error!("Failed to free driver data");
+        } else {
             unsafe {
                 drop(Box::from_raw(
                     driver_data as *mut HwDeviceCtx<EmulatedHwDevice>,
@@ -249,15 +267,32 @@ unsafe impl RdmaCtxOps for BlueRdmaCore {
 
     #[inline]
     fn alloc_pd(blue_context: *mut ibverbs_sys::ibv_context) -> *mut ibverbs_sys::ibv_pd {
-        Box::into_raw(Box::new(ibverbs_sys::ibv_pd {
-            context: blue_context,
-            handle: 0,
-        }))
+        let bluerdma = get_device(blue_context);
+
+        match bluerdma.alloc_pd() {
+            Ok(handle) => Box::into_raw(Box::new(ibverbs_sys::ibv_pd {
+                context: blue_context,
+                handle,
+            })),
+            Err(err) => {
+                error!("Failed to alloc PD: {err}");
+                ptr::null_mut()
+            }
+        }
     }
 
     #[inline]
     fn dealloc_pd(pd: *mut ibverbs_sys::ibv_pd) -> ::std::os::raw::c_int {
-        0
+        let pd = deref_or_ret!(pd, libc::EINVAL);
+        let bluerdma = get_device(pd.context);
+
+        match bluerdma.dealloc_pd(pd.handle) {
+            Ok(()) => 0,
+            Err(err) => {
+                error!("failed to dealloc PD");
+                err.to_errno()
+            }
+        }
     }
 
     #[inline]
@@ -312,32 +347,41 @@ unsafe impl RdmaCtxOps for BlueRdmaCore {
         channel: *mut ibverbs_sys::ibv_comp_channel,
         comp_vector: core::ffi::c_int,
     ) -> *mut ibverbs_sys::ibv_cq {
-        let bluerdma = unsafe { get_device(blue_context) };
-        let Some(handle) = bluerdma.create_cq() else {
-            return ptr::null_mut();
-        };
-        let cq = ibverbs_sys::ibv_cq {
-            context: blue_context,
-            channel,
-            cq_context: ptr::null_mut(),
-            handle,
-            cqe,
-            mutex: ibverbs_sys::pthread_mutex_t::default(),
-            cond: ibverbs_sys::pthread_cond_t::default(),
-            comp_events_completed: 0,
-            async_events_completed: 0,
-        };
-
-        Box::into_raw(Box::new(cq))
+        let bluerdma = get_device(blue_context);
+        match bluerdma.create_cq() {
+            Ok(handle) => {
+                let cq = ibverbs_sys::ibv_cq {
+                    context: blue_context,
+                    channel,
+                    cq_context: ptr::null_mut(),
+                    handle,
+                    cqe,
+                    mutex: ibverbs_sys::pthread_mutex_t::default(),
+                    cond: ibverbs_sys::pthread_cond_t::default(),
+                    comp_events_completed: 0,
+                    async_events_completed: 0,
+                };
+                Box::into_raw(Box::new(cq))
+            }
+            Err(err) => {
+                error!("Failed to create cq");
+                ptr::null_mut()
+            }
+        }
     }
 
     #[inline]
     fn destroy_cq(cq: *mut ibverbs_sys::ibv_cq) -> ::std::os::raw::c_int {
-        let cq = unsafe { Box::from_raw(cq) };
-        let context = cq.context;
-        let bluerdma = unsafe { get_device(context) };
-        bluerdma.destroy_cq(cq.handle);
-        0
+        let cq = deref_or_ret!(cq, libc::EINVAL);
+        let bluerdma = get_device(cq.context);
+
+        match bluerdma.destroy_cq(cq.handle) {
+            Ok(()) => 0,
+            Err(err) => {
+                error!("Failed to destroy CQ: {}", cq.handle);
+                err.to_errno()
+            }
+        }
     }
 
     #[inline]
@@ -345,38 +389,45 @@ unsafe impl RdmaCtxOps for BlueRdmaCore {
         pd: *mut ibverbs_sys::ibv_pd,
         init_attr: *mut ibverbs_sys::ibv_qp_init_attr,
     ) -> *mut ibverbs_sys::ibv_qp {
-        let context = unsafe { *pd }.context;
-        let bluerdma = unsafe { get_device(context) };
-        let init_attr = unsafe { *init_attr };
-        let Ok(qpn) = bluerdma.create_qp(IbvQpInitAttr::new(init_attr)) else {
-            return ptr::null_mut();
-        };
-        Box::into_raw(Box::new(ibverbs_sys::ibv_qp {
-            context,
-            qp_context: ptr::null_mut(),
-            pd,
-            send_cq: ptr::null_mut(),
-            recv_cq: ptr::null_mut(),
-            srq: ptr::null_mut(),
-            handle: 0,
-            qp_num: qpn,
-            state: ibverbs_sys::ibv_qp_state::IBV_QPS_INIT,
-            qp_type: init_attr.qp_type,
-            mutex: ibverbs_sys::pthread_mutex_t::default(),
-            cond: ibverbs_sys::pthread_cond_t::default(),
-            events_completed: 0,
-        }))
+        let context = deref_or_ret!(pd, ptr::null_mut()).context;
+        let bluerdma = get_device(context);
+        let init_attr = deref_or_ret!(init_attr, ptr::null_mut());
+        match bluerdma.create_qp(IbvQpInitAttr::new(init_attr)) {
+            Ok(qpn) => Box::into_raw(Box::new(ibverbs_sys::ibv_qp {
+                context,
+                qp_context: ptr::null_mut(),
+                pd,
+                send_cq: ptr::null_mut(),
+                recv_cq: ptr::null_mut(),
+                srq: ptr::null_mut(),
+                handle: 0,
+                qp_num: qpn,
+                state: ibverbs_sys::ibv_qp_state::IBV_QPS_INIT,
+                qp_type: init_attr.qp_type,
+                mutex: ibverbs_sys::pthread_mutex_t::default(),
+                cond: ibverbs_sys::pthread_cond_t::default(),
+                events_completed: 0,
+            })),
+            Err(err) => {
+                error!("Failed to create qp: {err}");
+                ptr::null_mut()
+            }
+        }
     }
 
     #[inline]
     fn destroy_qp(qp: *mut ibverbs_sys::ibv_qp) -> ::std::os::raw::c_int {
-        let qp = unsafe { *qp };
+        let qp = deref_or_ret!(qp, libc::EINVAL);
         let context = qp.context;
-        let bluerdma = unsafe { get_device(context) };
+        let bluerdma = get_device(context);
         let qpn = qp.qp_num;
-        bluerdma.destroy_qp(qpn);
-
-        0
+        match bluerdma.destroy_qp(qpn) {
+            Ok(()) => 0,
+            Err(err) => {
+                error!("Failed to destroy QP: {qpn}");
+                err.to_errno()
+            }
+        }
     }
 
     #[allow(clippy::cast_sign_loss)]
@@ -386,13 +437,18 @@ unsafe impl RdmaCtxOps for BlueRdmaCore {
         attr: *mut ibverbs_sys::ibv_qp_attr,
         attr_mask: core::ffi::c_int,
     ) -> ::std::os::raw::c_int {
-        let qp = unsafe { *qp };
-        let attr = unsafe { *attr };
+        let qp = deref_or_ret!(qp, libc::EINVAL);
+        let attr = deref_or_ret!(attr, libc::EINVAL);
         let context = qp.context;
-        let bluerdma = unsafe { get_device(context) };
+        let bluerdma = get_device(context);
         let mask = attr_mask as u32;
-        bluerdma.update_qp(qp.qp_num, IbvQpAttr::new(attr, attr_mask as u32));
-        0
+        match bluerdma.update_qp(qp.qp_num, IbvQpAttr::new(attr, attr_mask as u32)) {
+            Ok(()) => 0,
+            Err(err) => {
+                error!("Failed to modify QP: {}", qp.qp_num);
+                err.to_errno()
+            }
+        }
     }
 
     #[inline]
@@ -402,7 +458,7 @@ unsafe impl RdmaCtxOps for BlueRdmaCore {
         attr_mask: core::ffi::c_int,
         init_attr: *mut ibverbs_sys::ibv_qp_init_attr,
     ) -> ::std::os::raw::c_int {
-        let qp = unsafe { *qp };
+        let qp = deref_or_ret!(qp, libc::EINVAL);
         let context = qp.context;
         let bluerdma = unsafe { get_device(context) };
 
@@ -418,40 +474,42 @@ unsafe impl RdmaCtxOps for BlueRdmaCore {
         _hca_va: u64,
         access: core::ffi::c_int,
     ) -> *mut ibverbs_sys::ibv_mr {
-        let context = unsafe { (*pd) }.context;
-        let bluerdma = unsafe { get_device(context) };
-        let pd_handle = unsafe { *pd }.handle;
-        let Ok(mr_key) = bluerdma.reg_mr(addr as u64, length, pd_handle, access as u8) else {
-            return ptr::null_mut();
-        };
-        let ibv_mr = Box::new(ibverbs_sys::ibv_mr {
-            context,
-            pd,
-            addr,
-            length,
-            handle: mr_key, // the `mr_key` is used for identify the memory region
-            lkey: mr_key,
-            rkey: mr_key,
-        });
-        Box::into_raw(ibv_mr)
+        let pd_deref = deref_or_ret!(pd, ptr::null_mut());
+        let context = pd_deref.context;
+        let pd_handle = pd_deref.handle;
+        let bluerdma = get_device(pd_deref.context);
+        match bluerdma.reg_mr(addr as u64, length, pd_handle, access as u8) {
+            Ok(mr_key) => {
+                let ibv_mr = Box::new(ibverbs_sys::ibv_mr {
+                    context,
+                    pd,
+                    addr,
+                    length,
+                    handle: mr_key, // the `mr_key` is used for identify the memory region
+                    lkey: mr_key,
+                    rkey: mr_key,
+                });
+                Box::into_raw(ibv_mr)
+            }
+            Err(err) => {
+                error!("Failed to register MR");
+                ptr::null_mut()
+            }
+        }
     }
 
     #[inline]
     fn dereg_mr(mr: *mut ibverbs_sys::ibv_mr) -> ::std::os::raw::c_int {
-        if mr.is_null() {
-            return libc::EINVAL;
+        let mr = deref_or_ret!(mr, libc::EINVAL);
+        let pd = deref_or_ret!(mr.pd, libc::EINVAL);
+        let bluerdma = get_device(mr.context);
+        match bluerdma.dereg_mr(mr.handle) {
+            Ok(()) => 0,
+            Err(err) => {
+                error!("Failed to deregister MR: {err}");
+                err.to_errno()
+            }
         }
-        let mr = unsafe { *mr };
-        if mr.pd.is_null() {
-            return libc::EINVAL;
-        }
-        let pd = unsafe { *mr.pd };
-        let bluerdma = unsafe { get_device(mr.context) };
-        if bluerdma.dereg_mr(mr.handle).is_err() {
-            return libc::EINVAL;
-        }
-
-        0
     }
 
     #[inline]
@@ -460,15 +518,19 @@ unsafe impl RdmaCtxOps for BlueRdmaCore {
         wr: *mut ibverbs_sys::ibv_send_wr,
         bad_wr: *mut *mut ibverbs_sys::ibv_send_wr,
     ) -> ::std::os::raw::c_int {
-        let qp = unsafe { *qp };
-        let wr = unsafe { *wr };
+        let qp = deref_or_ret!(qp, libc::EINVAL);
+        let wr = deref_or_ret!(wr, libc::EINVAL);
         let context = qp.context;
-        let bluerdma = unsafe { get_device(context) };
         let qp_num = qp.qp_num;
+        let bluerdma = get_device(context);
         let wr = SendWr::new(wr).unwrap_or_else(|_| todo!("handle invalid input"));
-        bluerdma.post_send(qp_num, wr);
-
-        0
+        match bluerdma.post_send(qp_num, wr) {
+            Ok(()) => 0,
+            Err(err) => {
+                error!("Failed to post send WR: {err}");
+                err.to_errno()
+            }
+        }
     }
 
     #[inline]
@@ -477,15 +539,19 @@ unsafe impl RdmaCtxOps for BlueRdmaCore {
         wr: *mut ibverbs_sys::ibv_recv_wr,
         bad_wr: *mut *mut ibverbs_sys::ibv_recv_wr,
     ) -> ::std::os::raw::c_int {
-        let qp = unsafe { *qp };
-        let wr = unsafe { *wr };
+        let qp = deref_or_ret!(qp, libc::EINVAL);
+        let wr = deref_or_ret!(wr, libc::EINVAL);
         let context = qp.context;
-        let bluerdma = unsafe { get_device(context) };
         let qp_num = qp.qp_num;
+        let bluerdma = unsafe { get_device(context) };
         let wr = RecvWr::new(wr).unwrap_or_else(|| todo!("handle invalid input"));
-        bluerdma.post_recv(qp_num, wr);
-
-        0
+        match bluerdma.post_recv(qp_num, wr) {
+            Ok(()) => 0,
+            Err(err) => {
+                error!("Failed to post recv WR: {err}");
+                err.to_errno()
+            }
+        }
     }
 
     #[allow(
@@ -499,9 +565,8 @@ unsafe impl RdmaCtxOps for BlueRdmaCore {
         num_entries: i32,
         wc: *mut ibverbs_sys::ibv_wc,
     ) -> i32 {
-        let cq = unsafe { *cq };
-        let context = cq.context;
-        let bluerdma = unsafe { get_device(context) };
+        let cq = deref_or_ret!(cq, 0);
+        let bluerdma = get_device(cq.context);
         let completions = bluerdma.poll_cq(cq.handle, num_entries as usize);
         let num = completions.len() as i32;
         for (i, c) in completions.into_iter().enumerate() {
@@ -539,7 +604,7 @@ struct BlueRdmaDevice {
 }
 
 #[allow(unsafe_code)]
-unsafe fn get_device(context: *mut ibverbs_sys::ibv_context) -> &'static mut dyn DeviceOps {
+fn get_device(context: *mut ibverbs_sys::ibv_context) -> &'static mut dyn DeviceOps {
     let dev_ptr = unsafe { *context }.device.cast::<BlueRdmaDevice>();
     let driver_ptr = unsafe { (*dev_ptr).driver };
     unsafe {

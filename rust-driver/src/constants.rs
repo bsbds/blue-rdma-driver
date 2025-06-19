@@ -24,3 +24,5 @@ pub(crate) const TEST_CARD_IP_ADDRESS: u32 = 0x1122_330A;
 // TODO: implement ARP MAC resolution
 pub(crate) const CARD_MAC_ADDRESS: u64 = 0xAABB_CCDD_EE0A;
 pub(crate) const CARD_MAC_ADDRESS_OCTETS: [u8; 6] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x0A];
+
+pub(crate) const MAX_PD_CNT: usize = 256;
