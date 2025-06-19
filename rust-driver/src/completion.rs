@@ -239,11 +239,10 @@ impl QueuePairMessageTracker {
 
     fn poll_send_completion(&mut self) -> Option<(SendEvent, Completion)> {
         let event = self.merge.pop_send()?;
-        let x = self.send.pop().unwrap_or_else(|| unreachable!());
-        let completion = match x.op {
-            SendEventOp::WriteSignaled => Completion::RdmaWrite { wr_id: x.wr_id },
-            SendEventOp::SendSignaled => Completion::Send { wr_id: x.wr_id },
-            SendEventOp::ReadSignaled => Completion::RdmaRead { wr_id: x.wr_id },
+        let completion = match event.op {
+            SendEventOp::WriteSignaled => Completion::RdmaWrite { wr_id: event.wr_id },
+            SendEventOp::SendSignaled => Completion::Send { wr_id: event.wr_id },
+            SendEventOp::ReadSignaled => Completion::RdmaRead { wr_id: event.wr_id },
         };
 
         Some((event, completion))
